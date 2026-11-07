@@ -17,6 +17,7 @@
     billetera: 'Billetera virtual',
     debito: 'Tarjeta de débito',
     credito: 'Tarjeta de crédito',
+    inversion: 'Inversión',
   };
   const VIEW_TITLES = {
     dashboard: 'Resumen', movements: 'Movimientos', accounts: 'Cuentas',
@@ -349,6 +350,7 @@
     if (!s.currencies.some((c) => c.code === BASE)) s.currencies.unshift(d.currencies[0]);
     s.expenseCategories.forEach((c) => { if (!Array.isArray(c.subs)) c.subs = []; });
     if (!Array.isArray(s.dues)) s.dues = [];
+    if (!Array.isArray(s.importBatches)) s.importBatches = [];
     if (!Array.isArray(s.statements)) s.statements = [];
     if (!s.importProfiles || typeof s.importProfiles !== 'object') s.importProfiles = {};
     if (!s.descMemory || typeof s.descMemory !== 'object') s.descMemory = {};
@@ -840,6 +842,9 @@
     for (const t of list) {
       if (t.type === 'ingreso') inc += txBase(t);
       if (t.type === 'egreso') exp += txBase(t);
+    }
+    const limit = S.mvLimit || 300;
+    for (const t of list.slice(0, limit)) {
       if (t.date !== lastDate) {
         if (open) html += '</ul>';
         html += `<div class="day-head">${esc(cap(dateLabel(t.date)))}</div><ul class="list">`;
@@ -848,6 +853,7 @@
       html += txRow(t);
     }
     if (open) html += '</ul>';
+    if (list.length > limit) html += `<div class="actions" style="justify-content:center"><button class="btn" data-action="mv-more">Mostrar más (${list.length - limit} restantes)</button></div>`;
     return `<div class="totals" style="margin-bottom:.8rem">
         <span>${list.length} movimiento${list.length === 1 ? '' : 's'}</span>
         <span>Ingresos <strong class="num pos">${money(round2(inc))}</strong></span>
@@ -880,7 +886,7 @@
   }
 
   function bindMovementFilters() {
-    const refresh = () => { $('#mv-list').innerHTML = renderMovementList(); };
+    const refresh = () => { S.mvLimit = 300; $('#mv-list').innerHTML = renderMovementList(); };
     $('#flt-q').addEventListener('input', (e) => { S.filters.q = e.target.value; refresh(); });
     $('#flt-type').addEventListener('change', (e) => { S.filters.type = e.target.value; refresh(); });
     $('#flt-account').addEventListener('change', (e) => { S.filters.account = e.target.value; refresh(); });
@@ -1210,7 +1216,7 @@
       if (Number.isNaN(amt) || amt === 0) return err('Ingresá un monto distinto de cero. Usá coma para los decimales.');
       let sign = 1;
       if (d.type === 'egreso') { if (amt < 0 || el('f-refund').checked) sign = -1; amt = Math.abs(amt); }
-      else if (amt < 0) return err(d.type === 'ingreso' ? 'El ingreso tiene que ser mayor a cero. Si es una devolución de un gasto, cargalo como egreso marcado como reintegro.' : 'El monto tiene que ser mayor a cero.');
+      else if (amt < 0 && !(existing && existing.type === 'ingreso' && existing.amount < 0 && d.type === 'ingreso')) return err(d.type === 'ingreso' ? 'El ingreso tiene que ser mayor a cero. Si es una devolución de un gasto, cargalo como egreso marcado como reintegro.' : 'El monto tiene que ser mayor a cero.');
       const now = new Date().toISOString();
       const keepCreated = first ? first.createdAt || now : now;
       let newTx = [];
@@ -1379,6 +1385,8 @@
           </div>
           ${used ? '<p class="hint">La moneda no se puede cambiar porque la cuenta ya tiene movimientos.</p>' : ''}
           <p class="hint" id="a-init-hint">Saldo al momento de empezar a registrar movimientos.</p>
+          ${acc && !linkedTarget(acc) ? `<label class="field"><span>Saldo real hoy (opcional)</span><input id="a-real" inputmode="decimal" autocomplete="off" placeholder="Saldo actual según la app: ${esc(numForInput(balances()[acc.id] || 0))}"></label>
+          <p class="hint">Si lo completás, se corrige el saldo inicial para que el saldo actual coincida con el real. Útil después de importar historial.</p>` : ''}
         </div>
         <div class="row" id="w-card">
           <label class="field"><span>Día de cierre</span><input id="a-close" type="number" min="1" max="31" inputmode="numeric" value="${esc(d.closingDay || '')}"></label>
@@ -1434,9 +1442,17 @@
         dueDay = el('a-due').value ? parseInt(el('a-due').value, 10) : '';
         if ((closingDay && (closingDay < 1 || closingDay > 31)) || (dueDay && (dueDay < 1 || dueDay > 31))) return err('Los días tienen que estar entre 1 y 31.');
       }
+      let initFinal = init;
+      const realEl = el('a-real');
+      if (acc && realEl && realEl.value.trim()) {
+        const real = parseAmount(realEl.value);
+        if (Number.isNaN(real)) return err('El saldo real no es un número válido. Usá coma para los decimales.');
+        const nowBal = balances()[acc.id] || 0;
+        initFinal = (Number(acc.initialBalance) || 0) + (real - nowBal);
+      }
       const data = {
         name, type, currency: link ? (account(link)?.currency || BASE) : el('a-cur').value,
-        initialBalance: round2(init), active: el('a-active').checked, closingDay, dueDay, linkedAccountId: link,
+        initialBalance: round2(initFinal), active: el('a-active').checked, closingDay, dueDay, linkedAccountId: link,
       };
       if (acc) Object.assign(acc, data);
       else s.accounts.push({ id: uid(), ...data });
@@ -3624,6 +3640,264 @@
   }
 
   // ============================================================
+  //  Importación de historial desde otra app
+  // ============================================================
+  function pickHistoryFile() {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.json,application/json';
+    inp.addEventListener('change', async () => {
+      const f = inp.files[0]; if (!f) return;
+      let pkg;
+      try { pkg = JSON.parse(await readFileAsText(f)); } catch { toast('El archivo no es válido.'); return; }
+      if (!pkg || pkg.format !== 'finanzas-import' || !Array.isArray(pkg.tx)) { toast('No es un archivo de importación de historial.'); return; }
+      openHistoryImport(pkg, f.name);
+    });
+    inp.click();
+  }
+
+  // ----- Búsqueda de la categoría existente más parecida -----
+  const IMP_SYN = [
+    [/nafta|combustible|ypf|shell|axion|gnc|estacion de servicio/, 'nafta combustible'],
+    [/patente|automotor/, 'patentes automotor impuestos'],
+    [/seguro.*auto|seguro autos/, 'seguros auto'],
+    [/seguro.*casa|seguro hogar/, 'seguros hogar'],
+    [/seguro papa|seguro de vida/, 'seguros vida'],
+    [/cochera|estacionamiento|peaje/, 'peajes estacionamiento'],
+    [/lavado|gomeria/, 'mantenimiento'],
+    [/arreglo|reparaci|taller mec|mecanic|service\b|repuesto|cubierta|neumatico/, 'reparaciones'],
+    [/impuesto municipal|\babl\b|tasa municipal/, 'inmobiliario abl impuestos municipal'],
+    [/inmobiliario/, 'inmobiliario impuestos'],
+    [/ganancias/, 'ganancias impuestos'], [/bienes personales/, 'bienes personales impuestos'], [/monotributo/, 'monotributo impuestos'],
+    [/expensas/, 'expensas vivienda'], [/alquiler/, 'alquiler vivienda'], [/ptmo|hipoteca/, 'vivienda alquiler'],
+    [/\bluz\b|edenor|edesur|factura de luz/, 'luz servicios'], [/\bgas\b|metrogas|naturgy/, 'gas servicios'], [/\bagua\b|obras sanitarias|aysa/, 'agua servicios'],
+    [/internet|fibertel|telecentro|cablevision|cable e internet/, 'internet servicios'],
+    [/celular|telefon|movistar|claro|personal/, 'telefonia servicios'],
+    [/netflix|disney|hbo|star\+|star plus|spotify|google music|youtube|amazon|xbox|ps plus|playstation|paramount|streaming|suscrip/, 'streaming'],
+    [/google almacenamiento|icloud|google one|almacenamiento/, 'streaming internet'],
+    [/alarma|monitoreo|camaras|tuya/, 'alarma seguridad'],
+    [/colegio|escuela|ingles|guitarra|piano|dibujo|\bdanza|clases|curso|taller de|universidad|facultad/, 'educacion cuotas cursos'],
+    [/libro|libreria|utiles/, 'libros materiales educacion'],
+    [/supermercado|\bsuper\b|\bcoto\b|carrefour|jumbo|\bvea\b|mercado chino|almacen\b|mayorista|changomas|walmart/, 'supermercado'],
+    [/verduler|fruta|carnicer|pescader|panader|fiambrer|dietetica/, 'verduleria almacen supermercado'],
+    [/farmacia|remedio|medicamento|farmacity/, 'farmacia salud'],
+    [/obra social|prepaga|osde|swiss|galeno|medicus|omint/, 'prepaga salud'],
+    [/medic|doctor|odontolog|dentista|analisis|estudios|kinesio|psicolog/, 'consultas estudios salud'],
+    [/\bropa\b|zapatilla|zapato|indumentaria|calzado|remera|pantalon|campera|malla\b|uniforme/, 'ropa'],
+    [/peluquer|perfum|cosmet|cuidado personal/, 'cuidado personal'],
+    [/cena|almuerzo|restaurant|resto|parrilla|pizzer|sushi|bodegon/, 'restaurantes salidas'],
+    [/delivery|pedidos ya|pedidosya|rappi/, 'delivery'],
+    [/cafe|salida|cine|teatro|\bbar\b|boliche|recital|show/, 'salidas ocio'],
+    [/viaje|vacacion|hotel|pasaje|vuelo|aerolinea|booking|airbnb|turismo/, 'viajes ocio'],
+    [/pileta|deporte|gimnasio|club|futbol|tenis|padel|juego|hobby/, 'hobbies ocio deportes'],
+    [/regalo|cumple/, 'regalos'],
+    [/comis|gtos banc|gastos bancarios|mantenimiento cuenta|banc/, 'comisiones bancarias'],
+    [/uber|taxi|cabify|colectivo|subte|tren|sube/, 'transporte publico'],
+    [/sac|aguinaldo|gratificaci|premio|retroactiv|vacaciones|liquidaci|asig no rem|adelanto|anticipo/, 'sueldo'],
+    [/sueldo|haberes|salario/, 'sueldo'],
+    [/intereses|interes|rendimiento|fci|plazo fijo|dividendo/, 'intereses rendimientos'],
+    [/honorario|factura|servicios profesionales/, 'honorarios'],
+    [/alquiler cobrado|alquileres/, 'alquileres cobrados'],
+  ];
+  // Mismas palabras, admitiendo plural o singular (impuesto/impuestos, regalo/regalos)
+  // Palabras demasiado genéricas para decidir una categoría a partir de una descripción
+  const DESC_STOP = new Set(['cuota', 'cuotas', 'saldo', 'pago', 'pagos', 'compra', 'compras', 'venta', 'reintegro', 'descuento', 'total', 'varios', 'gastos', 'cuenta', 'seña', 'adelanto']);
+  const tokEq = (a, b) => a === b || (Math.min(a.length, b.length) >= 4 && Math.abs(a.length - b.length) <= 2 && (a.startsWith(b) || b.startsWith(a)));
+  const stem = (w) => w;
+  const impTokens = (t) => normText(t).replace(/[^a-z0-9+ ]/g, ' ').split(' ').filter((w) => w.length >= 3 && !STOPW.has(w));
+  function impExpand(text) {
+    const n = normText(text);
+    let extra = '';
+    for (const [re, add] of IMP_SYN) if (re.test(n)) extra += ' ' + add;
+    const lit = impTokens(n).filter((w) => !DESC_STOP.has(w)), syn = impTokens(extra);
+    const inn = (arr, t) => arr.some((x) => tokEq(x, t));
+    return { lit: { has: (t) => inn(lit, t) }, syn: { has: (t) => inn(syn, t) }, has(t) { return inn(lit, t) || inn(syn, t); } };
+  }
+  function expenseLeaves() {
+    const out = [];
+    for (const c of s_().expenseCategories) {
+      if (!c.active) continue;
+      const subs = c.subs.filter((x) => x.active);
+      if (subs.length) subs.forEach((x) => out.push({ v: `${c.id}|${x.id}`, l: `${c.name} › ${x.name}`, cat: c, sub: x }));
+      else out.push({ v: `${c.id}|`, l: c.name, cat: c, sub: null });
+    }
+    return out.sort((a, b) => a.l.localeCompare(b.l, 'es'));
+  }
+  const s_ = () => st();
+  // primary: lo más específico (subcategoría vieja o descripción), secondary: contexto (categoría vieja)
+  function bestLeaf(primary, leaves, secondary = '') {
+    const p = impExpand(primary), q = impExpand(secondary);
+    // palabra literal de lo específico > sinónimo de lo específico > contexto general
+    const w = (t) => (p.lit.has(t) ? 3 : p.syn.has(t) ? 2 : q.has(t) ? 1 : 0);
+    let best = null, bestScore = 0, bestP = 0;
+    for (const lf of leaves) {
+      let subT = lf.sub ? impTokens(lf.sub.name).map(stem) : [];
+      if (lf.sub && lf.sub.kind && vehicle(lf.sub.vehicleId)) {
+        const vt = impTokens(vehicle(lf.sub.vehicleId).name);
+        subT = subT.filter((t) => !vt.some((v) => tokEq(v, t)));
+      }
+      const catT = impTokens(lf.cat ? lf.cat.name : lf.name || '').map(stem);
+      let sc = 0, sp = 0;
+      subT.forEach((t) => { const x = w(t); sc += x * 2; if (x >= 2) sp += 2; });
+      catT.forEach((t) => { const x = w(t); sc += x; if (x >= 2) sp += 1; });
+      sc += sp; // desempata a favor de lo específico
+      if (sc > bestScore) { bestScore = sc; best = lf; bestP = sp; }
+    }
+    return { leaf: best, score: bestScore, primary: bestP };
+  }
+  function fallbackLeaf(leaves) {
+    return leaves.find((l) => l.sub && /otros gastos/.test(normText(l.sub.name)))
+      || leaves.find((l) => /otros gastos|varios/.test(normText(l.l)))
+      || leaves.find((l) => /otro/.test(normText(l.l))) || leaves[0];
+  }
+  const GENERIC_OLD = /extraordinari|otros gastos|desconocid|varios|gastos vicky|gastos vicka/;
+  function accountMatch(a) {
+    const syn = (t) => normText(t).replace(/frances/g, 'frances bbva').replace(/\bca\b/g, 'caja ahorro').replace(/u\$s|usd|dolares?/g, 'usd').replace(/\$/g, ' ');
+    const at = impTokens(syn(a.name));
+    let best = null, bestR = 0;
+    for (const x of st().accounts) {
+      if (accCurrency(x) !== a.currency || linkedTarget(x)) continue;
+      if ((x.type === 'credito') !== (a.type === 'credito')) continue;
+      const xt = new Set(impTokens(syn(x.name)));
+      const brands = ['visa', 'master', 'mastercard', 'amex', 'american', 'cabal', 'naranja'];
+      if (brands.some((b) => at.includes(b) !== xt.has(b))) continue;
+      const r = at.filter((w) => xt.has(w)).length / Math.max(1, at.length);
+      if (r > bestR) { bestR = r; best = x; }
+    }
+    return bestR >= 0.6 ? best.id : 'new';
+  }
+
+  function openHistoryImport(pkg, fileName) {
+    const s = st();
+    const leaves = expenseLeaves();
+    const incs = [...s.incomeCategories].filter((c) => c.active).sort(byName);
+    if (!leaves.length || !incs.length) { toast('Necesitás tener categorías de egreso e ingreso activas.'); return; }
+    const fbLeaf = fallbackLeaf(leaves);
+    const fbInc = incs.find((c) => /otros ingresos/.test(normText(c.name))) || incs.find((c) => /otro/.test(normText(c.name))) || incs[0];
+    const cnt = { acc: {}, ec: {}, ic: {} };
+    for (const t of pkg.tx) {
+      cnt.acc[t[2]] = (cnt.acc[t[2]] || 0) + 1;
+      if (t[3] >= 0) cnt.acc[t[3]] = (cnt.acc[t[3]] || 0) + 1;
+      if (t[0] === 'e') cnt.ec[t[7]] = (cnt.ec[t[7]] || 0) + 1;
+      if (t[0] === 'i') cnt.ic[t[7]] = (cnt.ic[t[7]] || 0) + 1;
+    }
+    const dates = pkg.tx.map((t) => t[1]).sort();
+    const firstExisting = s.transactions.map((t) => t.date).sort()[0];
+    const defCut = firstExisting && firstExisting <= dates[dates.length - 1] ? addDaysISO(firstExisting, -1) : dates[dates.length - 1];
+    const accDef = pkg.accounts.map(accountMatch);
+    // Hay coincidencia solo si la subcategoría vieja se parece a una tuya (no alcanza con la categoría general)
+    const ecDef = pkg.expenseCats.map((e) => { const r = bestLeaf(e.sub, leaves, e.cat); return (r.primary >= 2 && !GENERIC_OLD.test(normText(e.sub)) ? r.leaf : fbLeaf).v; });
+    const icDef = pkg.incomeCats.map((c) => { const r = bestLeaf(c.name, incs.map((x) => ({ v: x.id, l: x.name, cat: x, sub: null }))); return (r.primary >= 1 ? r.leaf.v : fbInc.id); });
+    const opt = (list, def) => list.map((o) => `<option value="${esc(o.v)}" ${o.v === def ? 'selected' : ''}>${esc(o.l)}</option>`).join('');
+    const accRows = pkg.accounts.map((a, i) => {
+      const opts = s.accounts.filter((x) => accCurrency(x) === a.currency && !linkedTarget(x)).map((x) => ({ v: x.id, l: `Usar: ${x.name}` }));
+      return `<div class="imp-row"><div><strong>${esc(a.name)}</strong><div class="sub muted small">${esc(ACCOUNT_TYPES[a.type] || a.type)}, ${esc(a.currency)}, ${cnt.acc[i] || 0} mov.</div></div>
+        <select data-acc="${i}"><option value="new" ${accDef[i] === 'new' ? 'selected' : ''}>Darla de alta como inactiva</option>${opt(opts, accDef[i])}</select></div>`;
+    }).join('');
+    const leafOpts = leaves.map((l) => ({ v: l.v, l: l.l }));
+    const ecRows = pkg.expenseCats.map((e, i) => `<div class="imp-row"><div><strong>${esc(e.cat)} › ${esc(e.sub)}</strong><div class="sub muted small">${cnt.ec[i] || 0} mov.</div></div>
+      <select data-ec="${i}">${opt(leafOpts, ecDef[i])}</select></div>`).join('');
+    const icRows = pkg.incomeCats.map((c, i) => `<div class="imp-row"><div><strong>${esc(c.name)}</strong><div class="sub muted small">${cnt.ic[i] || 0} mov.</div></div>
+      <select data-ic="${i}">${opt(incs.map((x) => ({ v: x.id, l: x.name })), icDef[i])}</select></div>`).join('');
+    const body = openModal('Importar historial', `
+      <form id="hif" novalidate>
+        <p>${pkg.tx.length.toLocaleString('es-AR')} movimientos del ${esc(dateShort(dates[0]))} al ${esc(dateShort(dates[dates.length - 1]))}. Todo va a tus categorías actuales: a cada categoría vieja se le asignó la más parecida, y las que no tienen una similar van a «${esc(fbLeaf.l)}». Revisalo antes de importar.</p>
+        <div class="row">
+          <label class="field"><span>Importar movimientos hasta el</span><input type="date" id="hi-cut" value="${esc(defCut)}"></label>
+          <label class="check" style="align-self:end"><input type="checkbox" id="hi-rates" checked>Agregar cotizaciones históricas del dólar</label>
+        </div>
+        <label class="check"><input type="checkbox" id="hi-desc" checked>En las categorías genéricas (extraordinarios, otros, desconocidos), ubicar cada movimiento según su descripción cuando se parezca claramente a una de tus categorías</label>
+        <details open class="imp-sec"><summary><h3>Cuentas (${pkg.accounts.length})</h3></summary>
+          <p class="hint">Las que ya no usás se dan de alta como inactivas. Si alguna corresponde a una cuenta que ya tenés (por ejemplo, otro nombre para la misma caja de ahorro), elegila.</p>${accRows}</details>
+        <details open class="imp-sec"><summary><h3>Categorías de egresos (${pkg.expenseCats.length})</h3></summary>${ecRows}</details>
+        <details class="imp-sec"><summary><h3>Categorías de ingresos (${pkg.incomeCats.length})</h3></summary>${icRows}</details>
+        <p class="error" id="hi-err"></p>
+        <div class="actions"><button type="button" class="btn" data-close>Cancelar</button><button type="submit" class="btn primary" id="hi-ok">Importar</button></div>
+      </form>`, { wide: true });
+    $('#hif', body).addEventListener('submit', (e) => {
+      e.preventDefault();
+      const cut = $('#hi-cut', body).value || '9999-12-31';
+      const accSel = pkg.accounts.map((_, i) => $(`[data-acc="${i}"]`, body).value);
+      const ecSel = pkg.expenseCats.map((_, i) => $(`[data-ec="${i}"]`, body).value);
+      const icSel = pkg.incomeCats.map((_, i) => $(`[data-ic="${i}"]`, body).value);
+      const n = pkg.tx.filter((t) => t[1] <= cut).length;
+      if (!n) { $('#hi-err', body).textContent = 'No hay movimientos para importar hasta esa fecha.'; return; }
+      if (!confirm(`Se van a importar ${n.toLocaleString('es-AR')} movimientos. Después podés deshacerlo desde Seguridad y backup. ¿Continuar?`)) return;
+      const r = runHistoryImport(pkg, fileName, { cut, accSel, ecSel, icSel, rates: $('#hi-rates', body).checked, byDesc: $('#hi-desc', body).checked, leaves, fbLeaf });
+      closeModal();
+      commit(`Importados ${r.count.toLocaleString('es-AR')} movimientos${r.reassigned ? `; ${r.reassigned.toLocaleString('es-AR')} se ubicaron por su descripción` : ''}`);
+    });
+  }
+
+  function runHistoryImport(pkg, fileName, o) {
+    const s = st();
+    const now = new Date().toISOString();
+    const batch = { id: uid(), date: now, file: fileName, count: 0, reassigned: 0, created: { accounts: [], expCats: [], expSubs: [], incCats: [] } };
+    for (const a of pkg.accounts) if (!s.currencies.some((c) => c.code === a.currency)) s.currencies.push({ code: a.currency, name: a.currency, symbol: a.currency });
+    const accIds = pkg.accounts.map((a, i) => {
+      if (o.accSel[i] !== 'new') return o.accSel[i];
+      const id = uid();
+      s.accounts.push({ id, name: a.name, type: a.type, currency: a.currency, initialBalance: 0, active: false, closingDay: '', dueDay: '', linkedAccountId: '' });
+      batch.created.accounts.push(id);
+      return id;
+    });
+    const split = (v) => { const [c, x] = v.split('|'); return { c, x: x || '' }; };
+    const ecTarget = o.ecSel.map(split);
+    const generic = pkg.expenseCats.map((e, i) => GENERIC_OLD.test(normText(e.sub)) || o.ecSel[i] === o.fbLeaf.v);
+    if (o.rates && pkg.rates) {
+      for (const r of pkg.rates) {
+        if (r.date <= o.cut && !s.rates.some((x) => x.currency === 'USD' && x.date === r.date)) s.rates.push({ id: uid(), currency: 'USD', date: r.date, rate: r.rate, note: r.note || 'importado' });
+      }
+    }
+    const vehOf = (catId, subId) => {
+      const sub = subOf(expCat(catId), subId);
+      return sub && sub.kind && vehicle(sub.vehicleId) ? { vehicle: { vehicleId: sub.vehicleId, kind: sub.kind, km: null, ...(sub.kind === 'combustible' ? { liters: null, fullTank: true } : { works: [] }) } } : {};
+    };
+    const out = [];
+    for (const t of pkg.tx) {
+      const [k, date, a, b, amt, toAmt, rate, cat, desc] = t;
+      if (date > o.cut) continue;
+      const acc = account(accIds[a]);
+      const cur = accCurrency(acc);
+      const base = { id: uid(), date, period: ymOf(date), accountId: acc.id, currency: cur, description: desc || '', createdAt: now, updatedAt: now, batch: batch.id };
+      if (k === 'x') {
+        const to = account(accIds[b]);
+        if (!to || to.id === acc.id) continue;
+        out.push({ ...base, type: 'transferencia', toAccountId: to.id, amount: amt, toAmount: toAmt, toCurrency: accCurrency(to) });
+      } else if (k === 'e') {
+        let tg = ecTarget[cat];
+        if (o.byDesc && generic[cat] && desc) {
+          const r = bestLeaf(desc, o.leaves);
+          if (r.primary >= 2 && r.leaf.v !== o.ecSel[cat]) { tg = split(r.leaf.v); batch.reassigned++; }
+        }
+        out.push({ ...base, type: 'egreso', amount: amt, rate: rate || 1, categoryId: tg.c, subcategoryId: tg.x, ...vehOf(tg.c, tg.x) });
+      } else {
+        out.push({ ...base, type: 'ingreso', amount: amt, rate: rate || 1, categoryId: o.icSel[cat], subcategoryId: '' });
+      }
+    }
+    s.transactions.push(...out);
+    batch.count = out.length;
+    s.importBatches.push(batch);
+    return batch;
+  }
+
+  function undoBatch(id) {
+    const s = st();
+    const b = s.importBatches.find((x) => x.id === id);
+    if (!b) return;
+    if (!confirm(`¿Deshacer la importación de “${b.file}”? Se borran sus ${b.count.toLocaleString('es-AR')} movimientos y las cuentas y categorías que creó y no usaste en otros movimientos.`)) return;
+    s.transactions = s.transactions.filter((t) => t.batch !== id);
+    const usedAcc = new Set(s.transactions.flatMap((t) => [t.accountId, t.toAccountId]));
+    s.accounts = s.accounts.filter((a) => !b.created.accounts.includes(a.id) || usedAcc.has(a.id) || s.accounts.some((x) => x.linkedAccountId === a.id));
+    const usedSub = new Set(s.transactions.map((t) => t.subcategoryId));
+    const usedCat = new Set(s.transactions.map((t) => t.categoryId));
+    s.expenseCategories.forEach((c) => { c.subs = c.subs.filter((x) => !b.created.expSubs.includes(x.id) || usedSub.has(x.id)); });
+    s.expenseCategories = s.expenseCategories.filter((c) => !b.created.expCats.includes(c.id) || c.subs.length || usedCat.has(c.id));
+    s.incomeCategories = s.incomeCategories.filter((c) => !b.created.incCats.includes(c.id) || usedCat.has(c.id));
+    s.importBatches = s.importBatches.filter((x) => x.id !== id);
+    commit('Importación deshecha');
+  }
+
+  // ============================================================
   //  Vista: Más (celular)
   // ============================================================
   function renderMore() {
@@ -3679,6 +3953,12 @@
               ${canShare ? '<button class="btn" data-action="share-backup">Compartir backup</button>' : ''}
               <button class="btn" data-action="import-backup">Restaurar backup</button>
             </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>Importar historial de otra app</h2></div>
+            <p>Cargá el archivo de importación preparado a partir de tu app anterior. Antes de importar vas a poder elegir a qué cuentas y categorías va cada cosa.</p>
+            <button class="btn" data-action="import-history">Elegir archivo</button>
+            ${(s.importBatches || []).length ? `<ul class="list" style="margin-top:.8rem">${s.importBatches.map((b) => `<li><div class="grow"><div class="title">${esc(b.file)}</div><div class="sub">${esc(new Date(b.date).toLocaleString('es-AR'))}, ${b.count} movimientos</div></div><button class="btn small danger" data-action="undo-batch" data-id="${esc(b.id)}">Deshacer</button></li>`).join('')}</ul>` : ''}
           </section>
           <section class="panel">
             <div class="panel-head"><h2>Exportar a planilla</h2></div>
@@ -3982,6 +4262,9 @@
       case 'share-backup': exportBackup(true); break;
       case 'import-backup': importBackupForm(); break;
       case 'export-csv': exportCSV(); break;
+      case 'mv-more': S.mvLimit = (S.mvLimit || 300) + 500; $('#mv-list').innerHTML = renderMovementList(); break;
+      case 'import-history': pickHistoryFile(); break;
+      case 'undo-batch': undoBatch(id); break;
       case 'wipe': wipeAll(); break;
       default: break;
     }
