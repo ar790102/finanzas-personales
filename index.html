@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#1d3a3f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Finanzas">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>Finanzas</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<noscript>Esta aplicación necesita JavaScript.</noscript>
+
+<!-- Pantalla de bloqueo / configuración inicial -->
+<section id="lock" class="lock" hidden>
+  <div class="lock-card">
+    <div class="lock-mark" aria-hidden="true"></div>
+    <h1 id="lock-title">Finanzas</h1>
+    <p id="lock-sub" class="muted"></p>
+    <div id="lock-body"></div>
+  </div>
+</section>
+
+<!-- Aplicación -->
+<div id="app" class="app" hidden>
+  <nav class="side" aria-label="Secciones">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Finanzas</div>
+    <button class="nav-btn" data-view="dashboard">Resumen</button>
+    <button class="nav-btn" data-view="movements">Movimientos</button>
+    <button class="nav-btn" data-view="dues">Vencimientos</button>
+    <button class="nav-btn" data-view="recon">Conciliación</button>
+    <button class="nav-btn" data-view="budget">Presupuesto</button>
+    <button class="nav-btn" data-view="analysis">Análisis</button>
+    <button class="nav-btn" data-view="accounts">Cuentas</button>
+    <button class="nav-btn" data-view="vehicles">Vehículos</button>
+    <button class="nav-btn" data-view="categories">Categorías</button>
+    <button class="nav-btn" data-view="currencies">Monedas</button>
+    <button class="nav-btn" data-view="settings">Seguridad y backup</button>
+    <div class="side-foot">
+      <button class="btn primary block" data-action="new-tx">Nuevo movimiento</button>
+      <button class="btn ghost block" data-action="lock">Bloquear</button>
+    </div>
+  </nav>
+
+  <header class="topbar">
+    <span class="brand"><span class="brand-mark" aria-hidden="true"></span><span id="top-title">Resumen</span></span>
+    <button class="btn ghost small" data-action="lock">Bloquear</button>
+  </header>
+
+  <main id="main" tabindex="-1"></main>
+
+  <button class="fab" data-action="new-tx" aria-label="Nuevo movimiento">+</button>
+
+  <nav class="bottom" aria-label="Secciones">
+    <button class="nav-btn" data-view="dashboard">Resumen</button>
+    <button class="nav-btn" data-view="movements">Movimientos</button>
+    <button class="nav-btn" data-view="dues">Vencimientos</button>
+    <button class="nav-btn" data-view="budget">Presupuesto</button>
+    <button class="nav-btn" data-view="more">Más</button>
+  </nav>
+</div>
+
+<dialog id="modal" class="modal">
+  <div class="modal-head">
+    <h2 id="modal-title"></h2>
+    <button class="icon-btn" data-close aria-label="Cerrar">×</button>
+  </div>
+  <div id="modal-body" class="modal-body"></div>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script src="chart.umd.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
