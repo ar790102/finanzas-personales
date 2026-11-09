@@ -362,7 +362,25 @@
     if (!Array.isArray(s.maintenanceTypes)) s.maintenanceTypes = seedMtypes();
     s.vehicles.forEach((v) => { if (!Array.isArray(v.kmReadings)) v.kmReadings = []; });
     if (!s.settings.vehicleSetupDone) autoSetupVehicles(s);
+    if (!s.settings.catOrderInit) { applyPreferredOrder(s); s.settings.catOrderInit = true; }
     return s;
+  }
+
+  // Orden inicial pedido; después se cambia desde Categorías → Ordenar
+  function applyPreferredOrder(s) {
+    const n = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const reorder = (list, prefs) => {
+      const picked = [];
+      for (const p of prefs) {
+        const np = n(p);
+        const hit = list.find((c) => !picked.includes(c) && n(c.name) === np)
+          || list.find((c) => !picked.includes(c) && (n(c.name).includes(np) || np.includes(n(c.name))) && n(c.name).length >= 3);
+        if (hit) picked.push(hit);
+      }
+      return [...picked, ...list.filter((c) => !picked.includes(c))];
+    };
+    s.incomeCategories = reorder(s.incomeCategories, ['Sueldo', 'SAC', 'Intereses y rendimientos', 'Gratificación anual']);
+    s.expenseCategories = reorder(s.expenseCategories, ['Impuestos del Hogar', 'Servicios', 'Alimentación', 'Educación', 'Ocio', 'Ropa y cuidado personal', 'Vehículos', 'Otros gastos', 'Gastos extraordinarios']);
   }
 
   // Configura una sola vez los vehículos a partir de subcategorías como "Nafta VW Taos"
@@ -1506,8 +1524,31 @@
   // ============================================================
   //  Vista: Categorías
   // ============================================================
+  function moveItem(list, idx, dir) {
+    const j = idx + dir;
+    if (j < 0 || j >= list.length) return false;
+    [list[idx], list[j]] = [list[j], list[idx]];
+    return true;
+  }
+  function renderCategorySort() {
+    const s = st();
+    const arrows = (kind, id, i, n, cat = '') => `<span class="sort-btns">
+      <button class="icon-btn" data-action="cat-move" data-kind="${kind}" data-id="${esc(id)}" data-cat="${esc(cat)}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="Subir">↑</button>
+      <button class="icon-btn" data-action="cat-move" data-kind="${kind}" data-id="${esc(id)}" data-cat="${esc(cat)}" data-dir="1" ${i === n - 1 ? 'disabled' : ''} aria-label="Bajar">↓</button></span>`;
+    const exp = s.expenseCategories.map((c, i) => `<li class="sort-cat"><div class="sort-row"><strong class="grow">${esc(c.name)}${c.active ? '' : '<span class="badge off">inactiva</span>'}</strong>${arrows('e', c.id, i, s.expenseCategories.length)}</div>
+      ${c.subs.length > 1 ? `<ul class="sort-subs">${c.subs.map((x, j) => `<li class="sort-row"><span class="grow">${esc(x.name)}</span>${arrows('s', x.id, j, c.subs.length, c.id)}</li>`).join('')}</ul>` : ''}</li>`).join('');
+    const inc = s.incomeCategories.map((c, i) => `<li class="sort-row"><strong class="grow">${esc(c.name)}${c.active ? '' : '<span class="badge off">inactiva</span>'}</strong>${arrows('i', c.id, i, s.incomeCategories.length)}</li>`).join('');
+    return `<div class="view-head"><h1>Ordenar categorías</h1><button class="btn primary" data-action="cat-sort-done">Listo</button></div>
+      <p class="muted small">Este orden se usa en Presupuesto y en todos los análisis. Con las flechas subís o bajás cada categoría y cada subcategoría.</p>
+      <div class="grid2">
+        <section class="panel"><div class="panel-head"><h2>Egresos</h2></div><ul class="sort-list">${exp}</ul></section>
+        <section class="panel"><div class="panel-head"><h2>Ingresos</h2></div><ul class="sort-list">${inc}</ul></section>
+      </div>`;
+  }
+
   function renderCategories() {
     const s = st();
+    if (S.catSort) return renderCategorySort();
     const incChips = s.incomeCategories.map((c) => `<button class="chip ${c.active ? '' : 'off'}" data-action="edit-inc-cat" data-id="${esc(c.id)}">${esc(c.name)}</button>`).join('');
     const expBlocks = s.expenseCategories.map((c) => `
       <div class="cat-block">
@@ -1518,7 +1559,7 @@
           <button class="chip add" data-action="new-sub" data-cat="${esc(c.id)}">+ Subcategoría</button>
         </div>
       </div>`).join('');
-    return `<div class="view-head"><h1>Categorías</h1></div>
+    return `<div class="view-head"><h1>Categorías</h1><button class="btn" data-action="cat-sort">Ordenar</button></div>
       <div class="grid2">
         <section class="panel">
           <div class="panel-head"><h2>Egresos</h2><button class="btn small" data-action="new-exp-cat">Nueva categoría</button></div>
@@ -1799,6 +1840,19 @@
   // versions: presupuesto vigente desde un mes en adelante. overrides: presupuesto propio de un mes puntual.
   const monthsBetween = (a, b) => { const out = []; for (let m = a; m <= b; m = addMonths(m, 1)) out.push(m); return out; };
   const byName = (a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' });
+  // Orden definido por el usuario en Categorías (el orden de las listas)
+  function orderOf(kind) {
+    const list = kind === 'i' ? st().incomeCategories : st().expenseCategories;
+    const m = new Map(list.map((c, i) => [c.id, i]));
+    return (a, b) => (m.has(a) ? m.get(a) : 1e9) - (m.has(b) ? m.get(b) : 1e9);
+  }
+  const byOrderObj = (kind) => { const f = orderOf(kind); return (a, b) => f(a.id, b.id); };
+  function subOrderOf(catId) {
+    const c = expCat(catId);
+    const m = new Map((c ? c.subs : []).map((x, i) => [x.id, i]));
+    const pos = (id) => (id === '' ? 1e9 - 1 : m.has(id) ? m.get(id) : 1e9);
+    return (a, b) => pos(a) - pos(b);
+  }
   function budgetVersion(ym) {
     return st().budget.versions.filter((v) => v.from <= ym).sort((a, b) => b.from.localeCompare(a.from))[0] || null;
   }
@@ -1912,7 +1966,7 @@
 
     // Egresos por categoría (con detalle por subcategoría)
     const expIds = [...new Set([...Object.keys(bud.exp), ...Object.keys(act.exp)])];
-    expIds.sort((a, b) => (bud.exp[b]?.total || 0) - (bud.exp[a]?.total || 0) || (act.exp[b]?.total || 0) - (act.exp[a]?.total || 0));
+    expIds.sort(orderOf('e'));
     const expRows = expIds.map((cid) => {
       const c = expCat(cid);
       const bt = bud.exp[cid]?.total || 0, rt = act.exp[cid]?.total || 0;
@@ -1922,11 +1976,12 @@
         const items = details[`e|${cid}|`];
         return items && items.length ? `<details class="bcat"><summary>${main}</summary><div class="bsubs">${budItemsHtml(items)}</div></details>` : `<div class="bcat">${main}</div>`;
       }
+      const so = subOrderOf(cid);
       const subRows = subIds.map((sid) => ({ sid, name: sid ? (subOf(c, sid)?.name || 'Subcategoría eliminada') : 'Sin subcategoría' }))
-        .sort(byName).map(({ sid, name }) => budRow(name, bud.exp[cid]?.subs[sid] || 0, act.exp[cid]?.subs[sid] || 0, 'out', null, true) + budItemsHtml(details[`e|${cid}|${sid}`])).join('');
+        .sort((x, y) => so(x.sid, y.sid)).map(({ sid, name }) => budRow(name, bud.exp[cid]?.subs[sid] || 0, act.exp[cid]?.subs[sid] || 0, 'out', null, true) + budItemsHtml(details[`e|${cid}|${sid}`])).join('');
       return `<details class="bcat"><summary>${main}</summary><div class="bsubs">${subRows}</div></details>`;
     }).join('');
-    const incIds = [...new Set([...Object.keys(bud.inc), ...Object.keys(act.inc)])].sort((a, b) => (bud.inc[b] || 0) - (bud.inc[a] || 0));
+    const incIds = [...new Set([...Object.keys(bud.inc), ...Object.keys(act.inc)])].sort(orderOf('i'));
     const incRows = incIds.map((cid) => `<div class="bcat">${budRow(incCat(cid)?.name || 'Sin categoría', bud.inc[cid] || 0, act.inc[cid] || 0, 'in', pace)}</div>`).join('');
 
     const resB = round2(bud.incT - bud.expT), resR = round2(act.incT - act.expT);
@@ -1966,13 +2021,13 @@
       </div>`;
     };
 
-    const expBlocks = [...s.expenseCategories].filter((c) => c.active || hasVal(`e|${c.id}|`)).sort(byName).map((c) => {
-      const subs = c.subs.filter((x) => x.active || vals[`e|${c.id}|${x.id}`]).sort(byName);
+    const expBlocks = [...s.expenseCategories].filter((c) => c.active || hasVal(`e|${c.id}|`)).map((c) => {
+      const subs = c.subs.filter((x) => x.active || vals[`e|${c.id}|${x.id}`]);
       let lines = subs.map((x) => input(`e|${c.id}|${x.id}`, x.name)).join('');
       if (!subs.length || vals[`e|${c.id}|`]) lines += input(`e|${c.id}|`, subs.length ? 'Sin subcategoría' : c.name);
       return `<div class="bud-cat" data-cat="${esc(c.id)}"><div class="bud-cat-head"><strong>${esc(c.name)}</strong><span class="num muted" data-total></span></div>${lines}</div>`;
     }).join('');
-    const incBlock = [...s.incomeCategories].filter((c) => c.active || vals[`i|${c.id}`]).sort(byName).map((c) => input(`i|${c.id}`, c.name)).join('');
+    const incBlock = [...s.incomeCategories].filter((c) => c.active || vals[`i|${c.id}`]).map((c) => input(`i|${c.id}`, c.name)).join('');
 
     const body = openModal(`Presupuesto de ${ymLabel(ym)}`, `
       <form id="bf" novalidate>
@@ -3441,9 +3496,9 @@
   const chartBox = (id, h) => `<div class="chart-box" style="height:${h}px"><canvas id="${id}"></canvas></div>`;
 
   function renderAnalysis() {
-    const tabs = [['evolucion', 'Evolución'], ['desvio', 'Presupuesto vs real'], ['comparar', 'Comparar períodos'], ['categoria', 'Por categoría']];
+    const tabs = [['evolucion', 'Evolución'], ['desvio', 'Presupuesto vs real'], ['proyeccion', 'Proyección'], ['comparar', 'Comparar períodos'], ['categoria', 'Por categoría']];
     const tabsHtml = `<div class="seg tabs" role="tablist">${tabs.map(([k, l]) => `<button type="button" role="tab" data-action="an-tab" data-tab="${k}" aria-pressed="${S.an.tab === k}">${l}</button>`).join('')}</div>`;
-    const fn = { evolucion: anEvolution, desvio: anDeviation, comparar: anCompare, categoria: anCategory }[S.an.tab] || anEvolution;
+    const fn = { evolucion: anEvolution, desvio: anDeviation, proyeccion: anProjection, comparar: anCompare, categoria: anCategory }[S.an.tab] || anEvolution;
     const out = fn();
     return `<div class="view-head"><h1>Análisis</h1>${out.head || ''}</div>${tabsHtml}${window.Chart ? '' : '<div class="warn">No se pudo cargar el módulo de gráficos (chart.umd.js). Verificá que el archivo esté publicado junto con la app.</div>'}${out.html}`;
   }
@@ -3455,6 +3510,8 @@
     const k = $('#an-key'); if (k) k.addEventListener('change', (e) => { S.an.key = e.target.value; render(); });
     const cr = $('#an-crange'); if (cr) cr.addEventListener('change', (e) => { S.an.catRange = Number(e.target.value); render(); });
     const av = $('#an-avg'); if (av) av.addEventListener('change', (e) => { S.an.avg = e.target.checked; render(); });
+    const pf = $('#pj-from'); if (pf) pf.addEventListener('change', (e) => { S.an.proj.from = e.target.value; render(); });
+    const pt = $('#pj-to'); if (pt) pt.addEventListener('change', (e) => { S.an.proj.to = e.target.value; render(); });
     $$('[data-pp] select').forEach((sel) => sel.addEventListener('change', () => {
       const which = sel.closest('[data-pp]').dataset.pp;
       const p = S.an.cmp[which];
@@ -3465,6 +3522,142 @@
       } else p[f] = f === 'year' || f === 'q' ? Number(sel.value) : sel.value;
       render();
     }));
+  }
+
+  // ----- Proyección: presupuesto hacia adelante y cerrados contra lo real -----
+  const short0 = new Intl.NumberFormat('es-AR', { maximumFractionDigits: 0 });
+  const moneyS = (n) => `${n < 0 ? '−' : ''}$ ${short0.format(Math.abs(Math.round(n)))}`;
+  function projPreset(k) {
+    const cur = ymOf(todayISO()), y = cur.slice(0, 4);
+    const P = S.an.proj;
+    if (k === 'next12') { P.from = cur; P.to = addMonths(cur, 11); }
+    if (k === 'year') { P.from = `${y}-01`; P.to = `${y}-12`; }
+    if (k === 'nextyear') { P.from = `${Number(y) + 1}-01`; P.to = `${Number(y) + 1}-12`; }
+    if (k === 'around') { P.from = addMonths(cur, -6); P.to = addMonths(cur, 5); }
+  }
+  function anProjection() {
+    const cur = ymOf(todayISO());
+    if (!S.an.proj) S.an.proj = { from: cur, to: addMonths(cur, 11), mode: 'mix', open: {} };
+    const P = S.an.proj;
+    let from = P.from, to = P.to;
+    if (to < from) [from, to] = [to, from];
+    if (monthsBetween(from, to).length > 60) to = addMonths(from, 59);
+    const months = monthsBetween(from, to);
+    let accB = 0, accP = 0, accRc = 0, accBc = 0;
+    const rows = months.map((m) => {
+      const B = budgetAgg(m), A = actualAgg(m);
+      const stt = m < cur ? 'cerrado' : m === cur ? 'curso' : 'futuro';
+      const r = { m, stt, B, A, bi: round2(B.incT), be: round2(B.expT), ri: round2(A.incT), re: round2(A.expT) };
+      r.bs = round2(r.bi - r.be); r.rs = round2(r.ri - r.re);
+      accB += r.bs; r.accB = accB;
+      accP += stt === 'cerrado' ? r.rs : r.bs; r.accP = accP;
+      if (stt === 'cerrado') { accRc += r.rs; accBc += r.bs; }
+      return r;
+    });
+    const closed = rows.filter((r) => r.stt === 'cerrado');
+    const totBI = rows.reduce((a, r) => a + r.bi, 0), totBE = rows.reduce((a, r) => a + r.be, 0);
+    const noBudget = !rows.some((r) => r.bi || r.be);
+    const mix = P.mode === 'mix';
+    const src = (r) => (mix && r.stt === 'cerrado' ? r.A : r.B);
+
+    // Gráfico: ahorro mensual y acumulado
+    pendingCharts.push(['ch-proj', {
+      type: 'bar',
+      data: { labels: months.map(ymShort), datasets: [
+        { type: 'bar', label: 'Ahorro presupuestado', data: rows.map((r) => r.bs), backgroundColor: rows.map((r) => rgba(cv('--gold'), r.stt === 'futuro' ? 0.45 : 0.7)), borderRadius: 4, order: 3 },
+        { type: 'bar', label: 'Ahorro real', data: rows.map((r) => (r.stt === 'futuro' ? null : r.rs)), backgroundColor: rows.map((r) => rgba(r.rs < 0 ? cv('--out') : cv('--in'), 0.8)), borderRadius: 4, order: 2 },
+        { type: 'line', label: 'Acumulado presupuestado', data: rows.map((r) => r.accB), borderColor: cv('--gold'), borderDash: [6, 4], pointRadius: 0, tension: 0.2, order: 1 },
+        { type: 'line', label: 'Acumulado real y proyectado', data: rows.map((r) => r.accP), borderColor: cv('--ink'), backgroundColor: cv('--ink'), pointRadius: rows.map((r) => (r.stt === 'cerrado' ? 3 : 0)), tension: 0.2, order: 0,
+          segment: { borderDash: (c) => (rows[c.p1DataIndex] && rows[c.p1DataIndex].stt !== 'cerrado' ? [3, 3] : undefined) } },
+      ] },
+      options: chartBase(false),
+    }]);
+
+    const kpi = (l, v, cls = '', sub = '') => `<div><span>${l}</span><strong class="num ${cls}">${v}</strong>${sub ? `<small class="muted">${sub}</small>` : ''}</div>`;
+    const desvC = round2(accRc - accBc);
+    const kpis = `<div class="kpis proj-kpis">
+      ${kpi('Ingresos presupuestados', moneyS(totBI), 'pos')}
+      ${kpi('Egresos presupuestados', moneyS(totBE), 'neg')}
+      ${kpi('Ahorro presupuestado', moneyS(totBI - totBE), totBI - totBE < 0 ? 'neg' : '', 'en todo el período')}
+      ${kpi('Ahorro proyectado', moneyS(accP), accP < 0 ? 'neg' : '', closed.length ? 'real en meses cerrados + presupuesto en el resto' : 'según presupuesto')}
+      ${closed.length ? kpi('Meses cerrados: real vs presupuesto', `${desvC >= 0 ? '+' : ''}${moneyS(desvC)}`, desvC < 0 ? 'neg' : 'pos', `ahorraste ${moneyS(accRc)} contra ${moneyS(accBc)} previstos`) : ''}
+    </div>`;
+
+    // Tabla mensual
+    const tag = (st0) => ({ cerrado: '<span class="badge">cerrado</span>', curso: '<span class="badge gold">en curso</span>', futuro: '<span class="badge pay">futuro</span>' }[st0]);
+    const mrow = rows.map((r) => {
+      const real = r.stt !== 'futuro';
+      const d = round2(r.rs - r.bs);
+      return `<tr class="st-${r.stt}"><td>${esc(ymTitle(r.m))} ${tag(r.stt)}</td>
+        <td class="r num">${moneyS(r.bi)}</td><td class="r num">${moneyS(r.be)}</td><td class="r num ${r.bs < 0 ? 'neg' : ''}">${moneyS(r.bs)}</td><td class="r num muted">${moneyS(r.accB)}</td>
+        <td class="r num">${real ? moneyS(r.ri) : '—'}</td><td class="r num">${real ? moneyS(r.re) : (r.re ? `<span class="muted" title="Cuotas y gastos ya cargados para ese mes">${moneyS(r.re)} comprometido</span>` : '—')}</td>
+        <td class="r num ${real ? (r.rs < 0 ? 'neg' : 'pos') : ''}">${real ? moneyS(r.rs) : '—'}</td>
+        <td class="r num ${r.stt === 'cerrado' ? (d < 0 ? 'neg' : 'pos') : ''}">${r.stt === 'cerrado' ? `${d >= 0 ? '+' : ''}${moneyS(d)}` : '—'}</td>
+        <td class="r num strong">${moneyS(r.accP)}</td></tr>`;
+    }).join('');
+    const monthly = `<div class="scroll-x"><table class="simple proj-table"><thead>
+      <tr><th></th><th class="r grp" colspan="4">Presupuestado</th><th class="r grp" colspan="4">Real</th><th class="r">Proyección</th></tr>
+      <tr><th>Mes</th><th class="r">Ingresos</th><th class="r">Egresos</th><th class="r">Ahorro</th><th class="r">Acumulado</th><th class="r">Ingresos</th><th class="r">Egresos</th><th class="r">Ahorro</th><th class="r">Desvío</th><th class="r">Ahorro acumulado</th></tr></thead>
+      <tbody>${mrow}</tbody></table></div>
+      <p class="hint" style="margin:.6rem 0 0">El ahorro acumulado proyectado usa lo real en los meses cerrados y lo presupuestado en el mes en curso y los futuros. En los meses futuros, “comprometido” son las cuotas y gastos que ya están cargados para ese mes.</p>`;
+
+    // Matriz por categoría y subcategoría
+    const mcols = rows.map((r) => `<th class="r ${mix && r.stt === 'cerrado' ? 'real-col' : ''}">${esc(ymShort(r.m))}${mix && r.stt === 'cerrado' ? '<br><small>real</small>' : ''}</th>`).join('');
+    const line = (label, vals, cls = '', action = '') => {
+      const tot = vals.reduce((a, v) => a + v, 0);
+      if (!tot && !vals.some((v) => v)) return '';
+      return `<tr class="${cls}" ${action}><td class="stick">${label}</td>${vals.map((v, i) => `<td class="r num ${mix && rows[i].stt === 'cerrado' ? 'real-col' : ''}">${v ? moneyS(v) : '<span class="muted">–</span>'}</td>`).join('')}<td class="r num strong">${moneyS(tot)}</td><td class="r num muted">${moneyS(tot / rows.length)}</td></tr>`;
+    };
+    const expIds = [...new Set(rows.flatMap((r) => Object.keys(src(r).exp)))]
+      .map((id) => ({ id, name: expCat(id)?.name || 'Sin categoría', tot: rows.reduce((a, r) => a + (src(r).exp[id]?.total || 0), 0) }))
+      .sort(byOrderObj('e'));
+    let expHtml = '';
+    for (const c of expIds) {
+      const cat = expCat(c.id);
+      const subIds = [...new Set(rows.flatMap((r) => Object.keys(src(r).exp[c.id]?.subs || {})))];
+      const canOpen = subIds.length > 1 || (subIds[0] && subIds[0] !== '');
+      const open = !!P.open[c.id];
+      expHtml += line(`${canOpen ? `<span class="tog">${open ? '▾' : '▸'}</span>` : ''}${esc(c.name)}`, rows.map((r) => round2(src(r).exp[c.id]?.total || 0)), `cat-row ${canOpen ? 'clickable' : ''}`, canOpen ? `data-action="proj-toggle" data-id="${esc(c.id)}"` : '');
+      if (open && canOpen) {
+        subIds.map((sid) => ({ sid, name: sid ? (subOf(cat, sid)?.name || 'Subcategoría eliminada') : 'Sin subcategoría' })).sort((x, y) => subOrderOf(c.id)(x.sid, y.sid))
+          .forEach(({ sid, name }) => { expHtml += line(esc(name), rows.map((r) => round2(src(r).exp[c.id]?.subs[sid] || 0)), 'sub-row'); });
+      }
+    }
+    const incIds = [...new Set(rows.flatMap((r) => Object.keys(src(r).inc)))]
+      .map((id) => ({ id, name: incCat(id)?.name || 'Sin categoría', tot: rows.reduce((a, r) => a + (src(r).inc[id] || 0), 0) })).sort(byOrderObj('i'));
+    const incHtml = incIds.map((c) => line(esc(c.name), rows.map((r) => round2(src(r).inc[c.id] || 0)), 'cat-row')).join('');
+    const totE = rows.map((r) => round2(src(r).expT)), totI = rows.map((r) => round2(src(r).incT));
+    const matrix = `<div class="scroll-x"><table class="simple matrix"><thead><tr><th class="stick"></th>${mcols}<th class="r">Total</th><th class="r">Promedio</th></tr></thead><tbody>
+      <tr class="sec-row"><td class="stick" colspan="${rows.length + 3}">Ingresos</td></tr>
+      ${incHtml}${line('<strong>Total ingresos</strong>', totI, 'tot-row')}
+      <tr class="sec-row"><td class="stick" colspan="${rows.length + 3}">Egresos</td></tr>
+      ${expHtml}${line('<strong>Total egresos</strong>', totE, 'tot-row')}
+      ${line('<strong>Ahorro</strong>', rows.map((_, i) => round2(totI[i] - totE[i])), 'tot-row save-row')}
+      </tbody></table></div>`;
+
+    const cur0 = ymOf(todayISO());
+    const mOpts = (sel) => { const o = []; for (let i = -60; i <= 36; i++) o.push(addMonths(cur0, i)); return o.map((m) => `<option value="${m}" ${m === sel ? 'selected' : ''}>${esc(ymTitle(m))}</option>`).join(''); };
+    return {
+      head: '',
+      html: `<section class="panel">
+          <div class="pp-row proj-range">
+            <label class="field"><span>Desde</span><select id="pj-from">${mOpts(from)}</select></label>
+            <label class="field"><span>Hasta</span><select id="pj-to">${mOpts(to)}</select></label>
+          </div>
+          <div class="pp-presets"><span class="muted small">Atajos:</span>
+            <button class="chip" data-action="proj-preset" data-preset="next12">Próximos 12 meses</button>
+            <button class="chip" data-action="proj-preset" data-preset="year">Este año</button>
+            <button class="chip" data-action="proj-preset" data-preset="nextyear">Año próximo</button>
+            <button class="chip" data-action="proj-preset" data-preset="around">6 meses atrás y 6 adelante</button></div>
+        </section>
+        ${noBudget ? '<div class="warn">No hay presupuesto cargado para estos meses. Cargalo en la sección Presupuesto para ver la proyección.</div>' : ''}
+        <section class="panel">${kpis}${chartBox('ch-proj', 300)}</section>
+        <section class="panel"><div class="panel-head"><h2>Mes a mes</h2></div>${monthly}</section>
+        <section class="panel"><div class="panel-head"><h2>Por categoría</h2>
+            <div class="seg compact" role="group"><button type="button" data-action="proj-mode" data-mode="pres" aria-pressed="${!mix}">Solo presupuesto</button><button type="button" data-action="proj-mode" data-mode="mix" aria-pressed="${mix}">Real en meses cerrados</button></div></div>
+          <p class="hint" style="margin:0 0 .6rem">Tocá una categoría para ver sus subcategorías.${mix ? ' Las columnas sombreadas muestran lo real de los meses cerrados.' : ''}</p>
+          ${matrix}</section>`,
+    };
   }
 
   // ----- Evolución -----
@@ -3513,8 +3706,7 @@
     const mode = S.an.desv;
     const from = mode === 'anio' ? `${S.month.slice(0, 4)}-01` : S.month;
     const b = budgetAgg(from, S.month), a = actualAgg(from, S.month);
-    const ids = [...new Set([...Object.keys(b.exp), ...Object.keys(a.exp)])]
-      .sort((x, y) => Math.max(b.exp[y]?.total || 0, a.exp[y]?.total || 0) - Math.max(b.exp[x]?.total || 0, a.exp[x]?.total || 0));
+    const ids = [...new Set([...Object.keys(b.exp), ...Object.keys(a.exp)])].sort(orderOf('e'));
     const names = ids.map((id) => expCat(id)?.name || 'Sin categoría');
     const bv = ids.map((id) => round2(b.exp[id]?.total || 0)), av = ids.map((id) => round2(a.exp[id]?.total || 0));
     if (ids.length) {
@@ -3622,9 +3814,8 @@
     const A = actualAgg(a1, a2), B = actualAgg(b1, b2);
     const fa = S.an.avg ? 1 / periodMonthsCount(pa) : 1, fb = S.an.avg ? 1 / periodMonthsCount(pb) : 1;
     const la = periodLabel(pa), lb = periodLabel(pb);
-    const ids = [...new Set([...Object.keys(A.exp), ...Object.keys(B.exp)])]
-      .sort((x, y) => Math.max((A.exp[y]?.total || 0) * fa, (B.exp[y]?.total || 0) * fb) - Math.max((A.exp[x]?.total || 0) * fa, (B.exp[x]?.total || 0) * fb));
-    const top = ids.slice(0, 10);
+    const ids = [...new Set([...Object.keys(A.exp), ...Object.keys(B.exp)])].sort(orderOf('e'));
+    const top = ids;
     if (top.length) {
       pendingCharts.push(['ch-cmp', {
         type: 'bar',
@@ -3644,14 +3835,14 @@
     const expRows = ids.map((id) => {
       const c = expCat(id);
       const subIds = [...new Set([...Object.keys(A.exp[id]?.subs || {}), ...Object.keys(B.exp[id]?.subs || {})])]
-        .map((sid) => ({ sid, name: sid ? (subOf(c, sid)?.name || 'Subcategoría eliminada') : 'Sin subcategoría' })).sort(byName);
+        .map((sid) => ({ sid, name: sid ? (subOf(c, sid)?.name || 'Subcategoría eliminada') : 'Sin subcategoría' })).sort((x, y) => subOrderOf(id)(x.sid, y.sid));
       let html = line(c?.name || 'Sin categoría', (A.exp[id]?.total || 0) * fa, (B.exp[id]?.total || 0) * fb, false, 'cat-row');
       if (subIds.length > 1 || (subIds[0] && subIds[0].sid)) {
         html += subIds.map(({ sid, name }) => line(name, (A.exp[id]?.subs[sid] || 0) * fa, (B.exp[id]?.subs[sid] || 0) * fb, false, 'sub-row')).join('');
       }
       return html;
     }).join('');
-    const incIds = [...new Set([...Object.keys(A.inc), ...Object.keys(B.inc)])];
+    const incIds = [...new Set([...Object.keys(A.inc), ...Object.keys(B.inc)])].sort(orderOf('i'));
     const incRows = incIds.map((id) => line(incCat(id)?.name || 'Sin categoría', (A.inc[id] || 0) * fa, (B.inc[id] || 0) * fb, true)).join('');
     const nA = periodMonthsCount(pa), nB = periodMonthsCount(pb);
     return {
@@ -3667,7 +3858,7 @@
           <p class="hint" style="margin:.3rem 0 0">${S.an.avg ? `Cada período se divide por la cantidad de meses con movimientos (${nA} y ${nB}).` : 'Útil cuando los períodos tienen distinta cantidad de meses.'} Los atajos toman como base el mes elegido en las otras solapas (${esc(ymLabel(S.month))}).</p>
         </section>
         <section class="panel"><div class="scroll-x">${summary}</div></section>
-        <section class="panel"><div class="panel-head"><h2>Egresos por categoría</h2><span class="muted small">las 10 más importantes</span></div>
+        <section class="panel"><div class="panel-head"><h2>Egresos por categoría</h2></div>
           ${top.length ? chartBox('ch-cmp', Math.max(180, 60 + top.length * 44)) : '<p class="muted">Sin egresos en estos períodos.</p>'}</section>
         <section class="panel"><div class="panel-head"><h2>Detalle de egresos</h2></div><div class="scroll-x"><table class="simple">${head}<tbody>${expRows || '<tr><td colspan="5" class="muted">Sin datos</td></tr>'}</tbody></table></div></section>
           <section class="panel"><div class="panel-head"><h2>Detalle de ingresos</h2></div><div class="scroll-x"><table class="simple">${head}<tbody>${incRows || '<tr><td colspan="5" class="muted">Sin datos</td></tr>'}</tbody></table></div></section>`,
@@ -3682,10 +3873,10 @@
       S.an.key = ids.length ? `E|${ids[0][0]}` : (s.expenseCategories[0] ? `E|${s.expenseCategories[0].id}` : '');
     }
     const key = S.an.key;
-    const opts = `<optgroup label="Egresos">${[...s.expenseCategories].sort(byName).map((c) =>
+    const opts = `<optgroup label="Egresos">${[...s.expenseCategories].map((c) =>
       `<option value="E|${esc(c.id)}" ${key === 'E|' + c.id ? 'selected' : ''}>${esc(c.name)}</option>` +
-      [...c.subs].sort(byName).map((x) => `<option value="e|${esc(c.id)}|${esc(x.id)}" ${key === `e|${c.id}|${x.id}` ? 'selected' : ''}>\u00a0\u00a0\u00a0\u00a0${esc(x.name)}</option>`).join('')).join('')}</optgroup>
-      <optgroup label="Ingresos">${[...s.incomeCategories].sort(byName).map((c) => `<option value="i|${esc(c.id)}" ${key === 'i|' + c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</optgroup>`;
+      [...c.subs].map((x) => `<option value="e|${esc(c.id)}|${esc(x.id)}" ${key === `e|${c.id}|${x.id}` ? 'selected' : ''}>\u00a0\u00a0\u00a0\u00a0${esc(x.name)}</option>`).join('')).join('')}</optgroup>
+      <optgroup label="Ingresos">${[...s.incomeCategories].map((c) => `<option value="i|${esc(c.id)}" ${key === 'i|' + c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</optgroup>`;
     const n = S.an.catRange;
     const months = monthsBetween(addMonths(S.month, -(n - 1)), S.month);
     const real = months.map((m) => round2(aggValue(actualAgg(m), key)));
@@ -4331,6 +4522,21 @@
       case 'edit-rule': { const r = s.importRules.find((y) => y.id === id); if (r) openRuleForm(r); break; }
       case 'an-tab': S.an.tab = el.dataset.tab; render(); break;
       case 'an-desv': S.an.desv = el.dataset.mode; render(); break;
+      case 'cat-sort': S.catSort = true; render(); break;
+      case 'cat-sort-done': S.catSort = false; render(); break;
+      case 'cat-move': {
+        const dir = Number(el.dataset.dir);
+        let list;
+        if (el.dataset.kind === 'e') list = s.expenseCategories;
+        else if (el.dataset.kind === 'i') list = s.incomeCategories;
+        else list = expCat(el.dataset.cat)?.subs || [];
+        const idx = list.findIndex((x) => x.id === id);
+        if (idx >= 0 && moveItem(list, idx, dir)) { save(); render(); }
+        break;
+      }
+      case 'proj-mode': S.an.proj.mode = el.dataset.mode; render(); break;
+      case 'proj-toggle': S.an.proj.open[id] = !S.an.proj.open[id]; render(); break;
+      case 'proj-preset': projPreset(el.dataset.preset); render(); break;
       case 'cmp-preset': cmpPreset(el.dataset.preset); render(); break;
       case 'new-vehicle': vehicleForm(null); break;
       case 'edit-vehicle': { const v = vehicle(id); if (v) vehicleForm(v); break; }
