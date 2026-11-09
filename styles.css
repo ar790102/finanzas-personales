@@ -424,3 +424,19 @@ details.panel[open] > summary { margin-bottom: .8rem; }
 .imp-row { display: grid; grid-template-columns: 1fr minmax(9rem, 1.1fr); gap: .6rem; align-items: center; padding: .45rem 0; border-top: 1px dashed var(--line); }
 .imp-row select { min-height: 36px; padding: .3rem .5rem; font-size: .88rem; }
 @media (max-width: 600px) { .imp-row { grid-template-columns: 1fr; gap: .25rem; } }
+
+/* ---------- Detalle de partidas del presupuesto ---------- */
+.bud-leaf { margin-bottom: .35rem; }
+.bud-leaf .bud-line { margin-bottom: 0; }
+.det-btn { appearance: none; border: 0; background: none; color: var(--ink); font: inherit; font-size: .78rem; font-weight: 700; padding: .1rem .3rem; margin-left: .2rem; cursor: pointer; border-radius: 6px; }
+.det-btn:hover { background: var(--surface); }
+.bud-line input[readonly] { background: transparent; border-style: dashed; color: var(--muted); }
+.det-list { margin: .35rem 0 .5rem .8rem; padding-left: .6rem; border-left: 2px solid var(--line); }
+.det-item { display: grid; grid-template-columns: 1fr 8rem 32px; gap: .35rem; align-items: center; margin-bottom: .3rem; }
+.det-item input { min-height: 34px; padding: .3rem .5rem; font-size: .88rem; background: var(--surface); }
+.det-item .det-amt { text-align: right; }
+.det-item .icon-btn { width: 32px; height: 32px; font-size: 1.2rem; }
+.det-list .chip.add { margin-top: .1rem; font-size: .8rem; }
+@media (max-width: 600px) { .det-item { grid-template-columns: 1fr 6.5rem 32px; } }
+.bud-items { list-style: none; margin: -.15rem 0 .45rem .9rem; padding: 0 0 0 .6rem; border-left: 2px dotted var(--line); font-size: .84rem; color: var(--muted); }
+.bud-items li { display: flex; justify-content: space-between; gap: .8rem; padding: .12rem 0; }

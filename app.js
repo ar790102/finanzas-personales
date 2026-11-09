@@ -1802,6 +1802,17 @@
   function budgetVersion(ym) {
     return st().budget.versions.filter((v) => v.from <= ym).sort((a, b) => b.from.localeCompare(a.from))[0] || null;
   }
+  // Detalle opcional de cada partida: { "e|cat|sub": [{ id, text, amount }] }
+  function budgetDetails(ym) {
+    const b = st().budget;
+    if (b.overrides[ym]) return (b.overrideDetails && b.overrideDetails[ym]) || {};
+    const v = budgetVersion(ym);
+    return (v && v.details) || {};
+  }
+  function budItemsHtml(items) {
+    if (!items || !items.length) return '';
+    return `<ul class="bud-items">${items.map((it) => `<li><span>${esc(it.text || 'Sin detalle')}</span><span class="num">${money(it.amount || 0)}</span></li>`).join('')}</ul>`;
+  }
   function budgetValues(ym) {
     const ov = st().budget.overrides[ym];
     if (ov) return ov;
@@ -1887,6 +1898,7 @@
   function renderBudget() {
     const s = st(), ym = S.month;
     const bud = budgetAgg(ym), act = actualAgg(ym);
+    const details = budgetDetails(ym);
     const ver = budgetVersion(ym), ov = s.budget.overrides[ym];
     const pace = monthPace(ym);
     const head = `<div class="view-head"><h1>Presupuesto</h1>
@@ -1906,9 +1918,12 @@
       const bt = bud.exp[cid]?.total || 0, rt = act.exp[cid]?.total || 0;
       const subIds = [...new Set([...Object.keys(bud.exp[cid]?.subs || {}), ...Object.keys(act.exp[cid]?.subs || {})])];
       const main = budRow(c ? c.name : 'Sin categoría', bt, rt, 'out', pace);
-      if (subIds.length <= 1 && (subIds[0] || '') === '') return `<div class="bcat">${main}</div>`;
+      if (subIds.length <= 1 && (subIds[0] || '') === '') {
+        const items = details[`e|${cid}|`];
+        return items && items.length ? `<details class="bcat"><summary>${main}</summary><div class="bsubs">${budItemsHtml(items)}</div></details>` : `<div class="bcat">${main}</div>`;
+      }
       const subRows = subIds.map((sid) => ({ sid, name: sid ? (subOf(c, sid)?.name || 'Subcategoría eliminada') : 'Sin subcategoría' }))
-        .sort(byName).map(({ sid, name }) => budRow(name, bud.exp[cid]?.subs[sid] || 0, act.exp[cid]?.subs[sid] || 0, 'out', null, true)).join('');
+        .sort(byName).map(({ sid, name }) => budRow(name, bud.exp[cid]?.subs[sid] || 0, act.exp[cid]?.subs[sid] || 0, 'out', null, true) + budItemsHtml(details[`e|${cid}|${sid}`])).join('');
       return `<details class="bcat"><summary>${main}</summary><div class="bsubs">${subRows}</div></details>`;
     }).join('');
     const incIds = [...new Set([...Object.keys(bud.inc), ...Object.keys(act.inc)])].sort((a, b) => (bud.inc[b] || 0) - (bud.inc[a] || 0));
@@ -1939,13 +1954,23 @@
     const vals = budgetValues(ym);
     const later = s.budget.versions.filter((v) => v.from > ym).sort((a, b) => a.from.localeCompare(b.from));
     const hasVal = (prefix) => Object.keys(vals).some((k) => k.startsWith(prefix) && vals[k]);
-    const input = (key, label) => `<label class="bud-line"><span>${esc(label)}</span><input data-key="${esc(key)}" inputmode="decimal" autocomplete="off" placeholder="0" value="${vals[key] ? esc(numForInput(vals[key])) : ''}"></label>`;
+    const dets = budgetDetails(ym);
+    const itemRow = (it = {}) => `<div class="det-item"><input class="det-text" maxlength="80" placeholder="Detalle (ej.: pintura del living)" value="${esc(it.text || '')}" autocomplete="off"><input class="det-amt" inputmode="decimal" placeholder="0" value="${it.amount ? esc(numForInput(it.amount)) : ''}" autocomplete="off"><button type="button" class="icon-btn det-del" aria-label="Quitar">×</button></div>`;
+    const input = (key, label) => {
+      const field = `<input data-key="${esc(key)}" inputmode="decimal" autocomplete="off" placeholder="0" value="${vals[key] ? esc(numForInput(vals[key])) : ''}"`;
+      if (!key.startsWith('e|')) return `<label class="bud-line"><span>${esc(label)}</span>${field}></label>`;
+      const items = dets[key] || [];
+      return `<div class="bud-leaf" data-leaf="${esc(key)}">
+        <label class="bud-line"><span>${esc(label)} <button type="button" class="det-btn">${items.length ? `Detalle (${items.length})` : '+ Detalle'}</button></span>${field} ${items.length ? 'readonly' : ''}></label>
+        <div class="det-list" ${items.length ? '' : 'hidden'}>${items.map(itemRow).join('')}<button type="button" class="chip add det-add">+ Agregar gasto</button></div>
+      </div>`;
+    };
 
     const expBlocks = [...s.expenseCategories].filter((c) => c.active || hasVal(`e|${c.id}|`)).sort(byName).map((c) => {
       const subs = c.subs.filter((x) => x.active || vals[`e|${c.id}|${x.id}`]).sort(byName);
       let lines = subs.map((x) => input(`e|${c.id}|${x.id}`, x.name)).join('');
       if (!subs.length || vals[`e|${c.id}|`]) lines += input(`e|${c.id}|`, subs.length ? 'Sin subcategoría' : c.name);
-      return `<div class="bud-cat" data-cat="${esc(c.id)}"><div class="bud-cat-head"><strong>${esc(c.name)}</strong><span class="num muted" data-total></span></div>${subs.length ? lines : lines.replace('<label class="bud-line">', '<label class="bud-line single">')}</div>`;
+      return `<div class="bud-cat" data-cat="${esc(c.id)}"><div class="bud-cat-head"><strong>${esc(c.name)}</strong><span class="num muted" data-total></span></div>${lines}</div>`;
     }).join('');
     const incBlock = [...s.incomeCategories].filter((c) => c.active || vals[`i|${c.id}`]).sort(byName).map((c) => input(`i|${c.id}`, c.name)).join('');
 
@@ -1994,7 +2019,7 @@
       let e = 0, i = 0;
       $$('.bud-cat[data-cat]', body).forEach((blk) => {
         let t = 0;
-        $$('input', blk).forEach((inp) => { const v = parseAmount(inp.value); if (v > 0) t += v; });
+        $$('input[data-key]', blk).forEach((inp) => { const v = parseAmount(inp.value); if (v > 0) t += v; });
         $('[data-total]', blk).textContent = t ? money(round2(t)) : '';
         e += t;
       });
@@ -2003,7 +2028,51 @@
       el('b-res').textContent = money(round2(i - e));
       el('b-res').className = `num ${i - e < 0 ? 'neg' : 'pos'}`;
     }
-    el('bf').addEventListener('input', (e) => { if (e.target.matches('input[data-key]')) totals(); });
+    // Detalle de gastos dentro de una partida: la partida pasa a ser la suma del detalle
+    function syncLeaf(leaf) {
+      const items = $$('.det-item', leaf);
+      const main = $('input[data-key]', leaf);
+      const btn = $('.det-btn', leaf);
+      if (items.length) {
+        const sum = items.reduce((a, it) => { const v = parseAmount($('.det-amt', it).value); return a + (v > 0 ? v : 0); }, 0);
+        main.value = sum ? numForInput(round2(sum)) : '';
+        main.readOnly = true;
+        btn.textContent = `Detalle (${items.length})`;
+      } else {
+        main.readOnly = false;
+        btn.textContent = '+ Detalle';
+        $('.det-list', leaf).hidden = true;
+      }
+    }
+    el('bf').addEventListener('click', (e) => {
+      const leaf = e.target.closest('.bud-leaf');
+      if (!leaf) return;
+      const list = $('.det-list', leaf);
+      if (e.target.closest('.det-btn')) {
+        e.preventDefault();
+        if (list.hidden) {
+          list.hidden = false;
+          if (!$('.det-item', leaf)) {
+            const cur = parseAmount($('input[data-key]', leaf).value);
+            $('.det-add', leaf).insertAdjacentHTML('beforebegin', itemRow({ amount: cur > 0 ? cur : '' }));
+          }
+          $('.det-text', leaf)?.focus();
+        } else if (!$('.det-item', leaf)) list.hidden = true;
+        else list.hidden = true;
+        syncLeaf(leaf); totals();
+      } else if (e.target.closest('.det-add')) {
+        $('.det-add', leaf).insertAdjacentHTML('beforebegin', itemRow());
+        const items = $$('.det-text', leaf); items[items.length - 1].focus();
+        syncLeaf(leaf);
+      } else if (e.target.closest('.det-del')) {
+        e.target.closest('.det-item').remove();
+        syncLeaf(leaf); totals();
+      }
+    });
+    el('bf').addEventListener('input', (e) => {
+      if (e.target.matches('.det-amt')) syncLeaf(e.target.closest('.bud-leaf'));
+      if (e.target.matches('input[data-key], .det-amt')) totals();
+    });
     totals();
 
     el('b-avg').addEventListener('click', () => {
@@ -2011,7 +2080,7 @@
       const aggs = months.map((m) => actualAgg(m));
       let filled = 0;
       $$('input[data-key]', body).forEach((inp) => {
-        if (inp.value.trim()) return;
+        if (inp.value.trim() || inp.readOnly) return;
         const avg = aggs.reduce((a, g) => a + aggValue(g, inp.dataset.key), 0) / 3;
         if (avg > 0) { inp.value = numForInput(Math.round(avg / 100) * 100); filled++; }
       });
@@ -2023,6 +2092,7 @@
       el('b-clear').addEventListener('click', () => {
         if (!confirm(`¿Quitar el presupuesto propio de ${ymLabel(ym)}? Vuelve a regir el presupuesto general.`)) return;
         delete s.budget.overrides[ym];
+        if (s.budget.overrideDetails) delete s.budget.overrideDetails[ym];
         closeModal();
         commit('Presupuesto actualizado');
       });
@@ -2030,7 +2100,18 @@
 
     el('bf').addEventListener('submit', (e) => {
       e.preventDefault();
-      const values = {};
+      const values = {}, details = {};
+      for (const leaf of $$('.bud-leaf', body)) {
+        const items = [];
+        for (const it of $$('.det-item', leaf)) {
+          const text = $('.det-text', it).value.trim();
+          const raw = $('.det-amt', it).value.trim();
+          const amount = raw ? parseAmount(raw) : 0;
+          if (raw && !(amount >= 0)) { $('.det-amt', it).focus(); el('b-err').textContent = 'Hay un importe del detalle que no es válido. Usá coma para los decimales.'; return; }
+          if (text || amount) items.push({ id: uid(), text, amount: round2(amount) });
+        }
+        if (items.length) details[leaf.dataset.leaf] = items;
+      }
       for (const inp of $$('input[data-key]', body)) {
         if (!inp.value.trim()) continue;
         const v = parseAmount(inp.value);
@@ -2040,10 +2121,13 @@
       if (scope === 'from') {
         const from = canBackfill && el('b-back').checked ? '' : ym; // '' = sin fecha de inicio
         s.budget.versions = s.budget.versions.filter((v) => v.from !== from && (from !== '' || v.from > ym));
-        s.budget.versions.push({ from, values });
+        s.budget.versions.push({ from, values, details });
         delete s.budget.overrides[ym];
+        if (s.budget.overrideDetails) delete s.budget.overrideDetails[ym];
       } else {
         s.budget.overrides[ym] = values;
+        s.budget.overrideDetails = s.budget.overrideDetails || {};
+        s.budget.overrideDetails[ym] = details;
       }
       closeModal();
       commit('Presupuesto guardado');
