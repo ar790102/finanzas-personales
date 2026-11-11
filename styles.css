@@ -135,7 +135,7 @@ input[type="checkbox"] { width: auto; min-height: 0; margin-right: .45rem; }
   linear-gradient(to top, var(--ink) 0 100%, transparent 100%) 12px 100% / 4px 100% no-repeat; }
 main { padding: 1rem 1rem calc(96px + var(--safe-b)); max-width: 1120px; margin: 0 auto; outline: none; }
 .bottom {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: grid; grid-template-columns: repeat(5, 1fr);
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: grid; grid-template-columns: repeat(6, 1fr);
   background: var(--surface); border-top: 1px solid var(--line); padding-bottom: var(--safe-b);
 }
 .bottom .nav-btn { appearance: none; border: 0; background: none; font: inherit; font-size: .74rem; font-weight: 600; color: var(--muted); padding: .8rem .2rem; cursor: pointer; }
@@ -474,3 +474,17 @@ table.matrix tr.sub-row td.stick { padding-left: 1.6rem; }
 .sort-btns { display: flex; gap: .1rem; }
 .sort-btns .icon-btn { width: 36px; height: 36px; font-size: 1.1rem; color: var(--ink); }
 .sort-btns .icon-btn:disabled { opacity: .25; cursor: default; }
+
+/* ---------- Barra inferior con 6 secciones ---------- */
+.bottom .nav-btn { font-size: min(.74rem, 2.55vw); padding: .85rem 0; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: clip; }
+/* ---------- Filtros de fecha ---------- */
+.flt-date { display: flex; align-items: center; gap: .4rem; font-size: .85rem; color: var(--muted); font-weight: 600; }
+.flt-date input { flex: 1; min-width: 0; }
+@media (min-width: 900px) { .filters { grid-template-columns: 2fr 1fr 1fr 1fr; } }
+/* ---------- Saldo disponible en proyección ---------- */
+table.matrix tr.bal-row td { background: var(--gold-soft); font-weight: 700; color: var(--ink); }
+table.matrix tr.bal-row td.stick { background: var(--gold-soft); }
+table.matrix tr.bal-end td { border-top: 2px solid var(--gold); }
+.bottom { display: flex; justify-content: space-between; padding-left: .35rem; padding-right: .35rem; }
+.bottom .nav-btn { flex: 0 1 auto; padding: .85rem .2rem; }
+@media (min-width: 900px) { .bottom { display: none; } }

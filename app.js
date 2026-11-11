@@ -22,7 +22,7 @@
   const VIEW_TITLES = {
     dashboard: 'Resumen', movements: 'Movimientos', accounts: 'Cuentas',
     categories: 'Categorías', currencies: 'Monedas y cotizaciones', vehicles: 'Vehículos',
-    budget: 'Presupuesto', analysis: 'Análisis', dues: 'Vencimientos', recon: 'Conciliación',
+    budget: 'Presupuesto', analysis: 'Análisis', dues: 'Vencimientos', recon: 'Conciliación', projection: 'Proyección',
     settings: 'Seguridad y backup', more: 'Más',
   };
   const MORE_VIEWS = ['analysis', 'recon', 'accounts', 'vehicles', 'categories', 'currencies', 'settings', 'more'];
@@ -249,7 +249,7 @@
   const S = {
     key: null, salt: null, iter: PBKDF2_ITER, state: null,
     view: 'dashboard', month: ymOf(todayISO()),
-    filters: { q: '', type: '', account: '', category: '', all: false },
+    filters: { q: '', type: '', account: '', category: '', sub: '', from: '', to: '', all: false },
     dueDay: null,
     reconId: null, reconDraft: {},
     an: { tab: 'evolucion', range: 12, desv: 'mes', cmp: null, avg: false, key: '', catRange: 12 },
@@ -363,6 +363,13 @@
     s.vehicles.forEach((v) => { if (!Array.isArray(v.kmReadings)) v.kmReadings = []; });
     if (!s.settings.vehicleSetupDone) autoSetupVehicles(s);
     if (!s.settings.catOrderInit) { applyPreferredOrder(s); s.settings.catOrderInit = true; }
+    if (!s.settings.projAccInit) {
+      // Cuentas pedidas para el saldo inicial: Efectivo, Ahorros $ y CA BBVA $
+      const n = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const want = new Set(['efectivo', 'ahorros $', 'ahorros', 'ca bbva $', 'ca bbva', 'ca bbva pesos']);
+      s.accounts.forEach((a) => { if (want.has(n(a.name)) && a.inProjection === undefined) a.inProjection = true; });
+      s.settings.projAccInit = true;
+    }
     return s;
   }
 
@@ -647,7 +654,7 @@
     if (!S.state) return;
     const views = {
       dashboard: renderDashboard, movements: renderMovements, accounts: renderAccounts, vehicles: renderVehicles,
-      budget: renderBudget, analysis: renderAnalysis, dues: renderDues, recon: renderRecon,
+      budget: renderBudget, analysis: renderAnalysis, dues: renderDues, recon: renderRecon, projection: renderProjection,
       categories: renderCategories, currencies: renderCurrencies, settings: renderSettings, more: renderMore,
     };
     destroyCharts();
@@ -659,7 +666,7 @@
     // Anchos de barras (se asignan por JS para no depender de estilos en línea)
     $$('[data-w]').forEach((el) => { el.style.width = `${Math.max(0, Math.min(100, Number(el.dataset.w)))}%`; });
     $$('[data-l]').forEach((el) => { el.style.left = `${Math.max(0, Math.min(100, Number(el.dataset.l)))}%`; });
-    if (S.view === 'analysis') bindAnalysis();
+    if (S.view === 'analysis' || S.view === 'projection') bindAnalysis();
     if (S.view === 'recon') bindRecon();
     if (S.view === 'movements') bindMovementFilters();
     if (S.view === 'settings') bindSettings();
@@ -803,13 +810,18 @@
     const f = S.filters;
     const q = f.q.trim().toLowerCase();
     return st().transactions.filter((t) => {
-      if (!f.all && t.period !== S.month) return false;
+      const byDate = f.from || f.to;
+      if (byDate) {
+        if (f.from && t.date < f.from) return false;
+        if (f.to && t.date > f.to) return false;
+      } else if (!f.all && t.period !== S.month) return false;
       if (f.type && t.type !== f.type) return false;
       if (f.account && t.accountId !== f.account && t.toAccountId !== f.account) return false;
       if (f.category) {
         const [kind, id] = f.category.split(':');
         if (kind === 'in' && !(t.type === 'ingreso' && t.categoryId === id)) return false;
         if (kind === 'out' && !(t.type === 'egreso' && t.categoryId === id)) return false;
+        if (kind === 'out' && f.sub && (t.subcategoryId || '') !== (f.sub === '_none' ? '' : f.sub)) return false;
       }
       if (q) {
         const hay = `${t.description || ''} ${categoryText(t)} ${accName(t.accountId)}`.toLowerCase();
@@ -884,10 +896,15 @@
     const accOpts = s.accounts.map((a) => `<option value="${esc(a.id)}" ${f.account === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('');
     const catOpts = `<optgroup label="Egresos">${s.expenseCategories.map((c) => `<option value="out:${esc(c.id)}" ${f.category === 'out:' + c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</optgroup>
       <optgroup label="Ingresos">${s.incomeCategories.map((c) => `<option value="in:${esc(c.id)}" ${f.category === 'in:' + c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</optgroup>`;
+    const byDate = f.from || f.to;
+    const fc = f.category.startsWith('out:') ? expCat(f.category.slice(4)) : null;
+    const subSel = fc && fc.subs.length ? `<select id="flt-sub" aria-label="Subcategoría"><option value="">Todas las subcategorías</option>${fc.subs.map((x) => `<option value="${esc(x.id)}" ${f.sub === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}<option value="_none" ${f.sub === '_none' ? 'selected' : ''}>Sin subcategoría</option></select>` : '';
+    const anyFilter = f.q || f.type || f.account || f.category || f.from || f.to;
     return `<div class="view-head"><h1>Movimientos</h1>
         <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
-          ${f.all ? '' : monthNav()}
-          <label class="check" style="margin:0"><input type="checkbox" id="flt-all" ${f.all ? 'checked' : ''}>Todos los meses</label>
+          ${byDate ? '<span class="muted small">Filtrando por fechas</span>' : `${f.all ? '' : monthNav()}
+          <label class="check" style="margin:0"><input type="checkbox" id="flt-all" ${f.all ? 'checked' : ''}>Todos los meses</label>`}
+          ${anyFilter ? '<button class="btn ghost small" data-action="mv-clear">Limpiar filtros</button>' : ''}
         </div></div>
       <div class="filters">
         <input class="wide" id="flt-q" type="search" placeholder="Buscar por descripción, categoría o cuenta" value="${esc(f.q)}" aria-label="Buscar">
@@ -899,6 +916,9 @@
         </select>
         <select id="flt-account" aria-label="Cuenta"><option value="">Todas las cuentas</option>${accOpts}</select>
         <select id="flt-cat" aria-label="Categoría"><option value="">Todas las categorías</option>${catOpts}</select>
+        ${subSel}
+        <label class="flt-date"><span>Desde</span><input type="date" id="flt-from" value="${esc(f.from)}"></label>
+        <label class="flt-date"><span>Hasta</span><input type="date" id="flt-to" value="${esc(f.to)}"></label>
       </div>
       <section class="panel" id="mv-list">${renderMovementList()}</section>`;
   }
@@ -908,8 +928,11 @@
     $('#flt-q').addEventListener('input', (e) => { S.filters.q = e.target.value; refresh(); });
     $('#flt-type').addEventListener('change', (e) => { S.filters.type = e.target.value; refresh(); });
     $('#flt-account').addEventListener('change', (e) => { S.filters.account = e.target.value; refresh(); });
-    $('#flt-cat').addEventListener('change', (e) => { S.filters.category = e.target.value; refresh(); });
-    $('#flt-all').addEventListener('change', (e) => { S.filters.all = e.target.checked; render(); });
+    $('#flt-cat').addEventListener('change', (e) => { S.filters.category = e.target.value; S.filters.sub = ''; S.mvLimit = 300; render(); });
+    $('#flt-sub')?.addEventListener('change', (e) => { S.filters.sub = e.target.value; refresh(); });
+    $('#flt-from').addEventListener('change', (e) => { S.filters.from = e.target.value; S.mvLimit = 300; render(); });
+    $('#flt-to').addEventListener('change', (e) => { S.filters.to = e.target.value; S.mvLimit = 300; render(); });
+    $('#flt-all')?.addEventListener('change', (e) => { S.filters.all = e.target.checked; render(); });
   }
 
   // ============================================================
@@ -1353,6 +1376,7 @@
         if (parts.length) sub += `, ${parts.join(' y ')}`;
       }
       if (linked) sub += `, opera sobre ${linked.name}`;
+      if (a.inProjection && !linked) sub += ', en saldo de proyección';
       let amt;
       if (linked) amt = '<div class="sub">usa el saldo de la cuenta vinculada</div>';
       else {
@@ -1411,6 +1435,7 @@
           <label class="field"><span>Día de vencimiento</span><input id="a-due" type="number" min="1" max="31" inputmode="numeric" value="${esc(d.dueDay || '')}"></label>
         </div>
         <label class="check"><input type="checkbox" id="a-active" ${d.active ? 'checked' : ''}>Cuenta activa</label>
+        <label class="check" id="w-proj"><input type="checkbox" id="a-proj" ${d.inProjection ? 'checked' : ''}>Se incluye en saldo inicial de proyección</label>
         <p class="error" id="a-err"></p>
         <div class="actions">
           ${acc ? '<button type="button" class="btn danger" id="a-del">Eliminar</button><span class="spacer"></span>' : ''}
@@ -1424,6 +1449,7 @@
       const linked = type === 'debito' && el('a-link').value;
       el('w-link').hidden = type !== 'debito';
       el('w-own').hidden = !!linked;
+      el('w-proj').hidden = !!linked;
       el('w-card').hidden = type !== 'credito';
       el('a-init-hint').textContent = type === 'credito'
         ? 'Si ya debés algo en la tarjeta, ingresalo en negativo (por ejemplo -150000).'
@@ -1471,6 +1497,7 @@
       const data = {
         name, type, currency: link ? (account(link)?.currency || BASE) : el('a-cur').value,
         initialBalance: round2(initFinal), active: el('a-active').checked, closingDay, dueDay, linkedAccountId: link,
+        inProjection: !link && el('a-proj').checked,
       };
       if (acc) Object.assign(acc, data);
       else s.accounts.push({ id: uid(), ...data });
@@ -3496,9 +3523,9 @@
   const chartBox = (id, h) => `<div class="chart-box" style="height:${h}px"><canvas id="${id}"></canvas></div>`;
 
   function renderAnalysis() {
-    const tabs = [['evolucion', 'Evolución'], ['desvio', 'Presupuesto vs real'], ['proyeccion', 'Proyección'], ['comparar', 'Comparar períodos'], ['categoria', 'Por categoría']];
+    const tabs = [['evolucion', 'Evolución'], ['desvio', 'Presupuesto vs real'], ['comparar', 'Comparar períodos'], ['categoria', 'Por categoría']];
     const tabsHtml = `<div class="seg tabs" role="tablist">${tabs.map(([k, l]) => `<button type="button" role="tab" data-action="an-tab" data-tab="${k}" aria-pressed="${S.an.tab === k}">${l}</button>`).join('')}</div>`;
-    const fn = { evolucion: anEvolution, desvio: anDeviation, proyeccion: anProjection, comparar: anCompare, categoria: anCategory }[S.an.tab] || anEvolution;
+    const fn = { evolucion: anEvolution, desvio: anDeviation, comparar: anCompare, categoria: anCategory }[S.an.tab] || anEvolution;
     const out = fn();
     return `<div class="view-head"><h1>Análisis</h1>${out.head || ''}</div>${tabsHtml}${window.Chart ? '' : '<div class="warn">No se pudo cargar el módulo de gráficos (chart.umd.js). Verificá que el archivo esté publicado junto con la app.</div>'}${out.html}`;
   }
@@ -3534,6 +3561,19 @@
     if (k === 'year') { P.from = `${y}-01`; P.to = `${y}-12`; }
     if (k === 'nextyear') { P.from = `${Number(y) + 1}-01`; P.to = `${Number(y) + 1}-12`; }
     if (k === 'around') { P.from = addMonths(cur, -6); P.to = addMonths(cur, 5); }
+  }
+  function renderProjection() {
+    const out = anProjection();
+    return `<div class="view-head"><h1>Proyección</h1></div>${window.Chart ? '' : '<div class="warn">No se pudo cargar el módulo de gráficos (chart.umd.js).</div>'}${out.html}`;
+  }
+  // Cuentas que forman el efectivo disponible de la proyección
+  const projAccounts = () => st().accounts.filter((a) => a.inProjection && !linkedTarget(a));
+  function availableAt(date) {
+    return projAccounts().reduce((sum, a) => {
+      const cur = accCurrency(a);
+      const r = cur === BASE ? 1 : (latestRate(cur, date) || 0);
+      return sum + balanceAt(a.id, date) * r;
+    }, 0);
   }
   function anProjection() {
     const cur = ymOf(todayISO());
@@ -3573,6 +3613,21 @@
       options: chartBase(false),
     }]);
 
+    // Saldo disponible: saldo real al inicio del primer mes; después, saldo final = inicial + ingresos − egresos
+    const pAccs = projAccounts();
+    const ini = [], fin = [];
+    if (pAccs.length) {
+      let start;
+      if (from <= cur) start = availableAt(addDaysISO(`${from}-01`, -1));
+      else {
+        start = availableAt(addDaysISO(`${cur}-01`, -1));
+        for (const m of monthsBetween(cur, addMonths(from, -1))) { const B = budgetAgg(m); start += B.incT - B.expT; }
+      }
+      rows.forEach((r, i) => {
+        ini[i] = round2(i ? fin[i - 1] : start);
+        fin[i] = round2(ini[i] + src(r).incT - src(r).expT);
+      });
+    }
     const kpi = (l, v, cls = '', sub = '') => `<div><span>${l}</span><strong class="num ${cls}">${v}</strong>${sub ? `<small class="muted">${sub}</small>` : ''}</div>`;
     const desvC = round2(accRc - accBc);
     const kpis = `<div class="kpis proj-kpis">
@@ -3581,6 +3636,7 @@
       ${kpi('Ahorro presupuestado', moneyS(totBI - totBE), totBI - totBE < 0 ? 'neg' : '', 'en todo el período')}
       ${kpi('Ahorro proyectado', moneyS(accP), accP < 0 ? 'neg' : '', closed.length ? 'real en meses cerrados + presupuesto en el resto' : 'según presupuesto')}
       ${closed.length ? kpi('Meses cerrados: real vs presupuesto', `${desvC >= 0 ? '+' : ''}${moneyS(desvC)}`, desvC < 0 ? 'neg' : 'pos', `ahorraste ${moneyS(accRc)} contra ${moneyS(accBc)} previstos`) : ''}
+      ${pAccs.length ? kpi(`Disponible al cierre de ${ymLabel(to)}`, moneyS(fin[fin.length - 1]), fin[fin.length - 1] < 0 ? 'neg' : '', `partiendo de ${moneyS(ini[0])} al inicio de ${ymLabel(from)}`) : ''}
     </div>`;
 
     // Tabla mensual
@@ -3627,13 +3683,17 @@
       .map((id) => ({ id, name: incCat(id)?.name || 'Sin categoría', tot: rows.reduce((a, r) => a + (src(r).inc[id] || 0), 0) })).sort(byOrderObj('i'));
     const incHtml = incIds.map((c) => line(esc(c.name), rows.map((r) => round2(src(r).inc[c.id] || 0)), 'cat-row')).join('');
     const totE = rows.map((r) => round2(src(r).expT)), totI = rows.map((r) => round2(src(r).incT));
+    const balRow = (label, vals, endVal, cls) => `<tr class="${cls}"><td class="stick">${label}</td>${vals.map((v, i) => `<td class="r num ${v < 0 ? 'neg' : ''} ${mix && rows[i].stt === 'cerrado' ? 'real-col' : ''}">${moneyS(v)}</td>`).join('')}<td class="r num strong">${moneyS(endVal)}</td><td></td></tr>`;
     const matrix = `<div class="scroll-x"><table class="simple matrix"><thead><tr><th class="stick"></th>${mcols}<th class="r">Total</th><th class="r">Promedio</th></tr></thead><tbody>
+      ${pAccs.length ? balRow('<strong>Saldo inicial disponible</strong>', ini, ini[0], 'bal-row') : ''}
       <tr class="sec-row"><td class="stick" colspan="${rows.length + 3}">Ingresos</td></tr>
       ${incHtml}${line('<strong>Total ingresos</strong>', totI, 'tot-row')}
       <tr class="sec-row"><td class="stick" colspan="${rows.length + 3}">Egresos</td></tr>
       ${expHtml}${line('<strong>Total egresos</strong>', totE, 'tot-row')}
       ${line('<strong>Ahorro</strong>', rows.map((_, i) => round2(totI[i] - totE[i])), 'tot-row save-row')}
-      </tbody></table></div>`;
+      ${pAccs.length ? balRow('<strong>Saldo final disponible</strong>', fin, fin[fin.length - 1], 'bal-row bal-end') : ''}
+      </tbody></table></div>
+      <p class="hint" style="margin:.6rem 0 0">${pAccs.length ? `Saldo disponible: ${esc(pAccs.map((a) => a.name).join(', '))}. El saldo inicial del primer mes es el real; desde ahí, el saldo final de cada mes (inicial + ingresos − egresos) pasa a ser el inicial del siguiente.` : 'Para ver el saldo disponible mes a mes, marcá en Cuentas cuáles se incluyen en el saldo inicial de la proyección.'}</p>`;
 
     const cur0 = ymOf(todayISO());
     const mOpts = (sel) => { const o = []; for (let i = -60; i <= 36; i++) o.push(addMonths(cur0, i)); return o.map((m) => `<option value="${m}" ${m === sel ? 'selected' : ''}>${esc(ymTitle(m))}</option>`).join(''); };
@@ -4477,7 +4537,7 @@
       case 'month-next': S.month = addMonths(S.month, 1); S.dueDay = null; render(); break;
       case 'month-today': S.month = ymOf(todayISO()); S.dueDay = null; render(); break;
       case 'filter-cat':
-        S.filters = { q: '', type: '', account: '', category: `${el.dataset.kind}:${id}`, all: false };
+        S.filters = { q: '', type: '', account: '', category: `${el.dataset.kind}:${id}`, sub: '', from: '', to: '', all: false };
         go('movements'); break;
       case 'new-account': openAccountForm(null); break;
       case 'edit-account': { const acc = account(id); if (acc) openAccountForm(acc); break; }
@@ -4552,6 +4612,7 @@
       case 'share-backup': exportBackup(true); break;
       case 'import-backup': importBackupForm(); break;
       case 'export-csv': exportCSV(); break;
+      case 'mv-clear': S.filters = { q: '', type: '', account: '', category: '', sub: '', from: '', to: '', all: false }; S.mvLimit = 300; render(); break;
       case 'mv-more': S.mvLimit = (S.mvLimit || 300) + 500; $('#mv-list').innerHTML = renderMovementList(); break;
       case 'import-history': pickHistoryFile(); break;
       case 'undo-batch': undoBatch(id); break;
