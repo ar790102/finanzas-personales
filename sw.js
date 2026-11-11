@@ -1,6 +1,6 @@
 // Guarda la app (no los datos) para que funcione sin conexión.
 // Al publicar una versión nueva, cambiá el número de CACHE.
-const CACHE = 'finanzas-v14';
+const CACHE = 'finanzas-v17';
 const ASSETS = ['./', './index.html', './app.js', './chart.umd.js', './pdf.min.mjs', './pdf.worker.min.mjs', './styles.css', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {

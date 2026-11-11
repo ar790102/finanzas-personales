@@ -3523,14 +3523,16 @@
   const chartBox = (id, h) => `<div class="chart-box" style="height:${h}px"><canvas id="${id}"></canvas></div>`;
 
   function renderAnalysis() {
-    const tabs = [['evolucion', 'Evolución'], ['desvio', 'Presupuesto vs real'], ['comparar', 'Comparar períodos'], ['categoria', 'Por categoría']];
+    const tabs = [['evolucion', 'Evolución'], ['desvio', 'Presupuesto vs real'], ['comparar', 'Comparar períodos'], ['categoria', 'Por categoría'], ['cuenta', 'Por cuenta']];
     const tabsHtml = `<div class="seg tabs" role="tablist">${tabs.map(([k, l]) => `<button type="button" role="tab" data-action="an-tab" data-tab="${k}" aria-pressed="${S.an.tab === k}">${l}</button>`).join('')}</div>`;
-    const fn = { evolucion: anEvolution, desvio: anDeviation, comparar: anCompare, categoria: anCategory }[S.an.tab] || anEvolution;
+    const fn = { evolucion: anEvolution, desvio: anDeviation, comparar: anCompare, categoria: anCategory, cuenta: anAccount }[S.an.tab] || anEvolution;
     const out = fn();
     return `<div class="view-head"><h1>Análisis</h1>${out.head || ''}</div>${tabsHtml}${window.Chart ? '' : '<div class="warn">No se pudo cargar el módulo de gráficos (chart.umd.js). Verificá que el archivo esté publicado junto con la app.</div>'}${out.html}`;
   }
   let pendingCharts = [];
   function bindAnalysis() {
+    const tabOn = $('.seg.tabs [aria-pressed="true"]');
+    if (tabOn) { const box = tabOn.parentElement; box.scrollLeft = tabOn.offsetLeft - (box.clientWidth - tabOn.offsetWidth) / 2; }
     pendingCharts.forEach(([id, cfg]) => makeChart(id, cfg));
     pendingCharts = [];
     const r = $('#an-range'); if (r) r.addEventListener('change', (e) => { S.an.range = Number(e.target.value); render(); });
@@ -3614,6 +3616,16 @@
     }]);
 
     // Saldo disponible: saldo real al inicio del primer mes; después, saldo final = inicial + ingresos − egresos
+    // Compras de dólares: transferencias de cuentas en pesos a cuentas en dólares, solo efectivo o cuenta bancaria
+    const cashBank = (a) => a && (a.type === 'efectivo' || a.type === 'banco');
+    const usdBuys = st().transactions.filter((t) => {
+      if (t.type !== 'transferencia') return false;
+      const fa = account(t.accountId), ta = account(t.toAccountId);
+      return cashBank(fa) && cashBank(ta) && accCurrency(fa) === BASE && accCurrency(ta) === 'USD';
+    });
+    // Solo las que salen de cuentas incluidas en el saldo inicial de la proyección
+    const usdOut = months.map((m) => round2(usdBuys.filter((t) => ymOf(t.date) === m && account(t.accountId).inProjection).reduce((a, t) => a + t.amount, 0)));
+    const usdTr = usdOut;
     const pAccs = projAccounts();
     const ini = [], fin = [];
     if (pAccs.length) {
@@ -3625,7 +3637,7 @@
       }
       rows.forEach((r, i) => {
         ini[i] = round2(i ? fin[i - 1] : start);
-        fin[i] = round2(ini[i] + src(r).incT - src(r).expT);
+        fin[i] = round2(ini[i] + src(r).incT - src(r).expT - usdOut[i]);
       });
     }
     const kpi = (l, v, cls = '', sub = '') => `<div><span>${l}</span><strong class="num ${cls}">${v}</strong>${sub ? `<small class="muted">${sub}</small>` : ''}</div>`;
@@ -3691,9 +3703,11 @@
       <tr class="sec-row"><td class="stick" colspan="${rows.length + 3}">Egresos</td></tr>
       ${expHtml}${line('<strong>Total egresos</strong>', totE, 'tot-row')}
       ${line('<strong>Ahorro</strong>', rows.map((_, i) => round2(totI[i] - totE[i])), 'tot-row save-row')}
+      <tr class="usd-row"><td class="stick">Transferencias a dólares</td>${usdTr.map((v, i) => `<td class="r num ${mix && rows[i].stt === 'cerrado' ? 'real-col' : ''}">${v ? '−' + moneyS(v) : '<span class="muted">–</span>'}</td>`).join('')}<td class="r num strong">${usdTr.some((v) => v) ? '−' + moneyS(usdTr.reduce((a, v) => a + v, 0)) : '–'}</td><td class="r num muted">${usdTr.some((v) => v) ? '−' + moneyS(usdTr.reduce((a, v) => a + v, 0) / rows.length) : ''}</td></tr>
       ${pAccs.length ? balRow('<strong>Saldo final disponible</strong>', fin, fin[fin.length - 1], 'bal-row bal-end') : ''}
       </tbody></table></div>
-      <p class="hint" style="margin:.6rem 0 0">${pAccs.length ? `Saldo disponible: ${esc(pAccs.map((a) => a.name).join(', '))}. El saldo inicial del primer mes es el real; desde ahí, el saldo final de cada mes (inicial + ingresos − egresos) pasa a ser el inicial del siguiente.` : 'Para ver el saldo disponible mes a mes, marcá en Cuentas cuáles se incluyen en el saldo inicial de la proyección.'}</p>`;
+      <p class="hint" style="margin:.6rem 0 0">${pAccs.length ? `Saldo disponible: ${esc(pAccs.map((a) => a.name).join(', '))}. El saldo inicial del primer mes es el real; desde ahí, el saldo final de cada mes (inicial + ingresos − egresos − transferencias a dólares) pasa a ser el inicial del siguiente.` : 'Para ver el saldo disponible mes a mes, marcá en Cuentas cuáles se incluyen en el saldo inicial de la proyección.'}
+        Transferencias a dólares: lo enviado desde las cuentas en pesos incluidas en el saldo inicial hacia cuentas en dólares de efectivo o bancarias, sin tarjetas de crédito. Se muestran las registradas, también en meses futuros si ya están cargadas.</p>`;
 
     const cur0 = ymOf(todayISO());
     const mOpts = (sel) => { const o = []; for (let i = -60; i <= 36; i++) o.push(addMonths(cur0, i)); return o.map((m) => `<option value="${m}" ${m === sel ? 'selected' : ''}>${esc(ymTitle(m))}</option>`).join(''); };
@@ -3713,11 +3727,79 @@
         ${noBudget ? '<div class="warn">No hay presupuesto cargado para estos meses. Cargalo en la sección Presupuesto para ver la proyección.</div>' : ''}
         <section class="panel">${kpis}${chartBox('ch-proj', 300)}</section>
         <section class="panel"><div class="panel-head"><h2>Mes a mes</h2></div>${monthly}</section>
-        <section class="panel"><div class="panel-head"><h2>Por categoría</h2>
+        <section class="panel"><div class="panel-head"><h2>Flujo de Fondos</h2>
             <div class="seg compact" role="group"><button type="button" data-action="proj-mode" data-mode="pres" aria-pressed="${!mix}">Solo presupuesto</button><button type="button" data-action="proj-mode" data-mode="mix" aria-pressed="${mix}">Real en meses cerrados</button></div></div>
           <p class="hint" style="margin:0 0 .6rem">Tocá una categoría para ver sus subcategorías.${mix ? ' Las columnas sombreadas muestran lo real de los meses cerrados.' : ''}</p>
           ${matrix}</section>`,
     };
+  }
+
+  // ----- Por cuenta: saldo inicial, movimientos del mes y saldo final -----
+  function anAccount() {
+    const s = st();
+    const accs = s.accounts.filter((a) => !linkedTarget(a));
+    if (!accs.length) return { head: monthNav(), html: '<section class="panel"><p class="muted">No hay cuentas.</p></section>' };
+    if (!accs.some((a) => a.id === S.an.acc)) S.an.acc = (accs.find((a) => a.active) || accs[0]).id;
+    const ym = S.month, today = todayISO(), cur = ymOf(today);
+    const start = `${ym}-01`, before = addDaysISO(start, -1);
+    const lastDay = addDaysISO(`${addMonths(ym, 1)}-01`, -1);
+    const end = ym === cur ? today : lastDay;
+    const endLabel = ym === cur ? `hoy, ${dateShort(today)}` : ym < cur ? `cierre del mes, ${dateShort(lastDay)}` : `fin del mes, ${dateShort(lastDay)}`;
+    const conv = (a, v, date) => { const c = accCurrency(a); if (c === BASE) return ''; const r = latestRate(c, date); return r ? `<div class="sub num">≈ ${money(v * r)}</div>` : ''; };
+
+    // Listado de cuentas con su saldo al final del período elegido
+    const item = (a) => {
+      const bal = balanceAt(a.id, end);
+      return `<li class="clickable acc-pick ${a.id === S.an.acc ? 'sel' : ''}" data-action="an-acc" data-id="${esc(a.id)}">
+        <div class="grow"><div class="title">${esc(a.name)}</div><div class="sub">${esc(ACCOUNT_TYPES[a.type] || a.type)}${accCurrency(a) !== BASE ? ', ' + esc(accCurrency(a)) : ''}</div></div>
+        <div class="amt"><div class="num ${bal < 0 ? 'neg' : ''}">${money(bal, accCurrency(a))}</div></div></li>`;
+    };
+    const active = accs.filter((a) => a.active), inactive = accs.filter((a) => !a.active);
+    const list = `<section class="panel acc-list"><div class="panel-head"><h2>Cuentas</h2><span class="muted small">saldo al ${esc(dateShort(end))}</span></div>
+      <ul class="list">${active.map(item).join('')}</ul>
+      ${inactive.length ? `<details ${inactive.some((a) => a.id === S.an.acc) ? 'open' : ''}><summary class="muted small" style="margin-top:.6rem;cursor:pointer">Cuentas inactivas (${inactive.length})</summary><ul class="list">${inactive.map(item).join('')}</ul></details>` : ''}</section>`;
+
+    // Detalle de la cuenta elegida
+    const a = account(S.an.acc);
+    const c = accCurrency(a);
+    const ini = balanceAt(a.id, before);
+    const effs = effectsFor(a.id).filter((e) => e.t.date >= start && e.t.date <= end)
+      .sort((x, y) => x.t.date.localeCompare(y.t.date) || (x.t.createdAt || '').localeCompare(y.t.createdAt || ''));
+    const later = ym === cur ? effectsFor(a.id).filter((e) => e.t.date > today && e.t.date <= lastDay).length : 0;
+    let run = ini, inSum = 0, outSum = 0;
+    const rowsHtml = effs.map((e) => {
+      run = round2(run + e.eff);
+      if (e.eff >= 0) inSum += e.eff; else outSum -= e.eff;
+      const t = e.t;
+      const what = t.type === 'transferencia'
+        ? (e.eff < 0 ? `Transferencia a ${accName(t.toAccountId)}` : `Transferencia desde ${accName(t.accountId)}`)
+        : categoryText(t);
+      const debit = t.accountId !== a.id && t.type !== 'transferencia' ? ` <span class="badge">${esc(accName(t.accountId))}</span>` : '';
+      return `<tr class="clickable" data-action="edit-tx" data-id="${esc(t.id)}">
+        <td>${esc(dateShort(t.date))}</td>
+        <td class="wrap"><div>${esc(t.description || what)}${debit}${t.installmentsTotal > 1 ? ` <span class="badge gold">cuota ${t.installmentNo}/${t.installmentsTotal}</span>` : ''}</div>${t.description ? `<div class="sub muted">${esc(what)}</div>` : ''}</td>
+        <td class="r num pos">${e.eff > 0 ? money(e.eff, c) : ''}</td>
+        <td class="r num neg">${e.eff < 0 ? money(-e.eff, c) : ''}</td>
+        <td class="r num ${run < 0 ? 'neg' : ''}">${money(run, c)}</td></tr>`;
+    }).join('');
+    const fin = round2(ini + inSum - outSum);
+    const kpi = (l, v, cls, sub = '') => `<div><span>${l}</span><strong class="num ${cls}">${v}</strong>${sub}</div>`;
+    const detail = `<section class="panel" id="acc-detail">
+      <div class="panel-head"><h2>${esc(a.name)}</h2><span class="muted small">${esc(ymTitle(ym))}</span></div>
+      <div class="kpis acc-kpis">
+        ${kpi(`Saldo inicial`, money(ini, c), ini < 0 ? 'neg' : '', `<small class="muted">al ${esc(dateShort(before))}</small>${conv(a, ini, before)}`)}
+        ${kpi('Entradas', money(round2(inSum), c), 'pos', `<small class="muted">ingresos y transferencias recibidas</small>`)}
+        ${kpi('Salidas', money(round2(outSum), c), 'neg', `<small class="muted">egresos y transferencias enviadas</small>`)}
+        ${kpi('Saldo final', money(fin, c), fin < 0 ? 'neg' : '', `<small class="muted">${esc(endLabel)}</small>${conv(a, fin, end)}`)}
+      </div>
+      ${effs.length ? `<div class="scroll-x"><table class="simple acc-table"><thead><tr><th>Fecha</th><th>Movimiento</th><th class="r">Entrada</th><th class="r">Salida</th><th class="r">Saldo</th></tr></thead>
+        <tbody><tr class="bal-line"><td>${esc(dateShort(before))}</td><td>Saldo inicial</td><td></td><td></td><td class="r num">${money(ini, c)}</td></tr>${rowsHtml}
+        <tr class="bal-line"><td>${esc(dateShort(end))}</td><td>Saldo final</td><td class="r num pos">${money(round2(inSum), c)}</td><td class="r num neg">${money(round2(outSum), c)}</td><td class="r num">${money(fin, c)}</td></tr></tbody></table></div>`
+        : '<p class="muted">No hay movimientos registrados en esta cuenta en el período.</p>'}
+      ${later ? `<p class="hint" style="margin:.6rem 0 0">Hay ${later} movimiento${later > 1 ? 's' : ''} con fecha posterior a hoy en este mes; no se cuentan en el saldo final.</p>` : ''}
+      ${a.type === 'credito' ? '<p class="hint" style="margin:.6rem 0 0">En tarjetas, los movimientos se ordenan por fecha de compra. El saldo negativo es lo que se debe.</p>' : ''}
+    </section>`;
+    return { head: `<div class="head-actions">${monthNav()}</div>`, html: `<div class="acc-grid">${list}${detail}</div>` };
   }
 
   // ----- Evolución -----
@@ -4581,6 +4663,7 @@
       case 'export-ics': exportIcsForm(); break;
       case 'edit-rule': { const r = s.importRules.find((y) => y.id === id); if (r) openRuleForm(r); break; }
       case 'an-tab': S.an.tab = el.dataset.tab; render(); break;
+      case 'an-acc': S.an.acc = id; render(); if (window.innerWidth < 900) $('#acc-detail')?.scrollIntoView({ block: 'start' }); break;
       case 'an-desv': S.an.desv = el.dataset.mode; render(); break;
       case 'cat-sort': S.catSort = true; render(); break;
       case 'cat-sort-done': S.catSort = false; render(); break;
