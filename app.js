@@ -984,13 +984,13 @@
           <label class="field"><span>Fecha</span><input type="date" id="f-date" value="${esc(d.date)}" required></label>
           <label class="field"><span id="f-amount-l">Monto</span><input id="f-amount" inputmode="decimal" autocomplete="off" placeholder="0,00" value="${esc(numForInput(d.amount))}"></label>
         </div>
-        <label class="check" id="w-refund"><input type="checkbox" id="f-refund" ${startRefund ? 'checked' : ''}>Es un reintegro, descuento o devolución (resta del gasto)</label>
+        <label class="check" id="w-refund"><input type="checkbox" id="f-refund" ${startRefund ? 'checked' : ''}>Reintegro o devolución (resta del gasto)</label>
         <label class="field"><span id="f-account-l">Cuenta</span><select id="f-account"></select></label>
         <div id="w-to">
           <label class="field"><span>Hacia la cuenta</span><select id="f-to"></select></label>
           <label class="field" id="w-toamount"><span id="f-toamount-l">Monto que ingresa</span><input id="f-toamount" inputmode="decimal" autocomplete="off" placeholder="0,00" value="${esc(numForInput(d.toAmount))}"></label>
         </div>
-        <div id="w-cat">
+        <div id="w-cat" class="row">
           <label class="field"><span>Categoría</span><select id="f-cat"></select></label>
           <label class="field" id="w-sub"><span>Subcategoría</span><select id="f-sub"></select></label>
         </div>

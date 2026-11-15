@@ -510,3 +510,25 @@ table.acc-table tr.bal-line td { font-weight: 700; background: var(--surface-2);
 @media (min-width: 900px) { .acc-grid { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); } }
 table.matrix tr.usd-row td { color: var(--muted); font-style: italic; }
 table.matrix tr.usd-row td.stick { font-style: normal; font-weight: 600; }
+
+/* ---------- Formularios compactos (carga de movimientos) ---------- */
+.modal input, .modal select, .modal textarea { font-size: .9rem; min-height: 38px; padding: .4rem .55rem; }
+.modal label.field > span { font-size: .78rem; margin-bottom: .15rem; }
+#txf .seg { margin-bottom: .6rem; }
+#txf .seg button { padding: .4rem; font-size: .9rem; }
+#txf label.field { margin-bottom: .55rem; }
+#txf .row { gap: .5rem; }
+#txf .check { margin-bottom: .5rem; font-size: .85rem; }
+#txf .preview { font-size: .8rem; margin: -.15rem 0 .55rem; padding: .4rem .6rem; }
+#txf .hint { font-size: .74rem; margin: -.3rem 0 .5rem; }
+#txf .error { margin: 0 0 .3rem; min-height: 0; }
+#txf .actions { margin-top: .3rem; }
+#txf .actions .btn { min-height: 38px; padding: .45rem .9rem; }
+#w-cat.row:has(> #w-sub[hidden]) { grid-template-columns: 1fr; }
+#txf .veh-box { padding: .6rem .7rem .1rem; margin-bottom: .6rem; }
+#txf .veh-title { margin-bottom: .4rem; font-size: .9rem; }
+@media (max-width: 600px) {
+  .modal-head { padding: .6rem .7rem .2rem 1rem; }
+  .modal-head h2 { font-size: 1.02rem; }
+  .modal-body { padding: 0 1rem calc(.8rem + var(--safe-b)); }
+}
