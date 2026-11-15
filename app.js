@@ -363,6 +363,13 @@
     s.vehicles.forEach((v) => { if (!Array.isArray(v.kmReadings)) v.kmReadings = []; });
     if (!s.settings.vehicleSetupDone) autoSetupVehicles(s);
     if (!s.settings.catOrderInit) { applyPreferredOrder(s); s.settings.catOrderInit = true; }
+    if (!s.settings.exclInit) {
+      // Pedido: los gastos pagados con Ahorros USD y Caja de Seguridad USD no cuentan en el análisis
+      const n = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+      const want = new Set(['ahorros usd', 'ahorros u$s', 'caja de seguridad usd', 'caja de seguridad u$s']);
+      s.accounts.forEach((a) => { if (want.has(n(a.name)) && a.excludeExp === undefined) a.excludeExp = true; });
+      s.settings.exclInit = true;
+    }
     if (!s.settings.projAccInit) {
       // Cuentas pedidas para el saldo inicial: Efectivo, Ahorros $ y CA BBVA $
       const n = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -585,11 +592,22 @@
     return mode === 'cierre' ? closeMonth : addMonths(closeMonth, 1);
   }
 
+  // Cuentas de ahorro cuyos egresos no cuentan en presupuesto, proyección ni análisis
+  function excludedAccSet() {
+    const set = new Set();
+    for (const a of st().accounts) {
+      const l = linkedTarget(a);
+      if (a.excludeExp || (l && l.excludeExp)) set.add(a.id);
+    }
+    return set;
+  }
+  const isExcluded = (t, set) => t.type === 'egreso' && set.has(t.accountId);
   function monthSummary(ym) {
     let inc = 0, exp = 0;
     const byExp = {}, byInc = {};
+    const ex = excludedAccSet();
     for (const t of st().transactions) {
-      if (t.period !== ym || t.type === 'transferencia') continue;
+      if (t.period !== ym || t.type === 'transferencia' || isExcluded(t, ex)) continue;
       const v = txBase(t);
       if (t.type === 'ingreso') { inc += v; byInc[t.categoryId] = (byInc[t.categoryId] || 0) + v; }
       else { exp += v; byExp[t.categoryId] = (byExp[t.categoryId] || 0) + v; }
@@ -752,8 +770,9 @@
     for (let i = 1; i <= 6; i++) {
       const ym = addMonths(S.month, i);
       let cuotas = 0, otros = 0;
+      const ex = excludedAccSet();
       for (const t of s.transactions) {
-        if (t.type !== 'egreso' || t.period !== ym) continue;
+        if (t.type !== 'egreso' || t.period !== ym || isExcluded(t, ex)) continue;
         if (t.installmentsTotal > 1) cuotas += txBase(t); else otros += txBase(t);
       }
       if (cuotas || otros) commits.push({ ym, cuotas: round2(cuotas), otros: round2(otros), total: round2(cuotas + otros) });
@@ -859,6 +878,7 @@
       : [t.description ? categoryText(t) : null, accName(t.accountId), t.vehicle && t.vehicle.km ? km(t.vehicle.km) : null].filter(Boolean).join(', ');
     let badges = '';
     if (t.type === 'egreso' && t.amount < 0) badges += '<span class="badge pay">reintegro</span>';
+    if (t.type === 'egreso' && excludedAccSet().has(t.accountId)) badges += '<span class="badge">fuera del análisis</span>';
     if (t.installmentsTotal > 1) badges += `<span class="badge gold">cuota ${t.installmentNo}/${t.installmentsTotal}</span>`;
     if (t.recon && st().statements.some((x) => x.id === t.recon)) badges += '<span class="badge pay">conciliado</span>';
     if (S.filters.all || t.period !== ymOf(t.date)) badges += `<span class="badge">${esc(ymShort(t.period))}</span>`;
@@ -1384,6 +1404,7 @@
       }
       if (linked) sub += `, opera sobre ${linked.name}`;
       if (a.inProjection && !linked) sub += ', en saldo de proyección';
+      if (a.excludeExp && !linked) sub += ', egresos fuera del análisis';
       let amt;
       if (linked) amt = '<div class="sub">usa el saldo de la cuenta vinculada</div>';
       else {
@@ -1443,6 +1464,7 @@
         </div>
         <label class="check"><input type="checkbox" id="a-active" ${d.active ? 'checked' : ''}>Cuenta activa</label>
         <label class="check" id="w-proj"><input type="checkbox" id="a-proj" ${d.inProjection ? 'checked' : ''}>Se incluye en saldo inicial de proyección</label>
+        <label class="check" id="w-excl"><input type="checkbox" id="a-excl" ${d.excludeExp ? 'checked' : ''}>Cuenta de ahorro: sus egresos no cuentan en presupuesto, proyección ni análisis</label>
         <p class="error" id="a-err"></p>
         <div class="actions">
           ${acc ? '<button type="button" class="btn danger" id="a-del">Eliminar</button><span class="spacer"></span>' : ''}
@@ -1457,6 +1479,7 @@
       el('w-link').hidden = type !== 'debito';
       el('w-own').hidden = !!linked;
       el('w-proj').hidden = !!linked;
+      el('w-excl').hidden = !!linked;
       el('w-card').hidden = type !== 'credito';
       el('a-init-hint').textContent = type === 'credito'
         ? 'Si ya debés algo en la tarjeta, ingresalo en negativo (por ejemplo -150000).'
@@ -1505,6 +1528,7 @@
         name, type, currency: link ? (account(link)?.currency || BASE) : el('a-cur').value,
         initialBalance: round2(initFinal), active: el('a-active').checked, closingDay, dueDay, linkedAccountId: link,
         inProjection: !link && el('a-proj').checked,
+        excludeExp: !link && el('a-excl').checked,
       };
       if (acc) Object.assign(acc, data);
       else s.accounts.push({ id: uid(), ...data });
@@ -1927,8 +1951,9 @@
   }
   function actualAgg(from, to = from) {
     const agg = emptyAgg();
+    const ex = excludedAccSet();
     for (const t of st().transactions) {
-      if (t.type === 'transferencia' || t.period < from || t.period > to) continue;
+      if (t.type === 'transferencia' || t.period < from || t.period > to || isExcluded(t, ex)) continue;
       aggAdd(agg, t.type === 'egreso' ? 'e' : 'i', t.categoryId, t.type === 'egreso' ? (t.subcategoryId || '') : '', txBase(t));
     }
     return agg;
