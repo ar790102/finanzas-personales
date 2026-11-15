@@ -746,13 +746,17 @@
       </div>`;
     }).join('')}</div>` : `<p class="muted">Sin ${kind === 'in' ? 'ingresos' : 'egresos'} en este mes.</p>`;
 
-    // Cuotas ya comprometidas en los próximos meses
+    // Gastos ya cargados que se imputan a los próximos meses: cuotas y consumos en un pago
+    // (por ejemplo, compras con tarjeta que entran en el resumen del mes siguiente)
     const commits = [];
     for (let i = 1; i <= 6; i++) {
       const ym = addMonths(S.month, i);
-      const v = s.transactions.filter((t) => t.type === 'egreso' && t.installmentsTotal > 1 && t.period === ym)
-        .reduce((a, t) => a + txBase(t), 0);
-      if (v > 0) commits.push([ym, round2(v)]);
+      let cuotas = 0, otros = 0;
+      for (const t of s.transactions) {
+        if (t.type !== 'egreso' || t.period !== ym) continue;
+        if (t.installmentsTotal > 1) cuotas += txBase(t); else otros += txBase(t);
+      }
+      if (cuotas || otros) commits.push({ ym, cuotas: round2(cuotas), otros: round2(otros), total: round2(cuotas + otros) });
     }
 
     const accRows = s.accounts.filter((a) => a.id in bal && (a.active || bal[a.id] !== 0)).map((a) => {
@@ -795,9 +799,12 @@
             ${nw.missing.length ? `<p class="hint" style="margin-top:.5rem">Falta la cotización de ${esc(nw.missing.join(', '))}; esas cuentas no se suman.</p>` : ''}
           </section>
           <section class="panel">
-            <div class="panel-head"><h2>Cuotas comprometidas</h2><span class="muted small">próximos 6 meses</span></div>
-            ${commits.length ? `<ul class="list">${commits.map(([ym, v]) => `<li><div class="grow">${esc(ymTitle(ym))}</div><div class="num">${money(v)}</div></li>`).join('')}</ul>`
-              : '<p class="muted">No hay cuotas pendientes después de este mes.</p>'}
+            <div class="panel-head"><h2>Gastos ya comprometidos</h2><span class="muted small">próximos 6 meses</span></div>
+            ${commits.length ? `<ul class="list">${commits.map((c) => `<li class="clickable" data-action="goto-month" data-ym="${c.ym}"><div class="grow"><div class="title">${esc(ymTitle(c.ym))}</div>
+                <div class="sub">${[c.cuotas ? `cuotas ${money(c.cuotas)}` : '', c.otros ? `consumos en un pago ${money(c.otros)}` : ''].filter(Boolean).join(', ')}</div></div>
+                <div class="num">${money(c.total)}</div></li>`).join('')}</ul>
+              <p class="hint" style="margin:.5rem 0 0">Cuotas y consumos ya cargados que se imputan a esos meses, como las compras con tarjeta que entran en el resumen siguiente. Tocá un mes para ver el detalle.</p>`
+              : '<p class="muted">No hay gastos cargados para los meses siguientes.</p>'}
           </section>
         </div>
       </div>`;
@@ -4695,6 +4702,7 @@
       case 'share-backup': exportBackup(true); break;
       case 'import-backup': importBackupForm(); break;
       case 'export-csv': exportCSV(); break;
+      case 'goto-month': S.month = el.dataset.ym; S.filters = { q: '', type: 'egreso', account: '', category: '', sub: '', from: '', to: '', all: false }; S.mvLimit = 300; go('movements'); break;
       case 'mv-clear': S.filters = { q: '', type: '', account: '', category: '', sub: '', from: '', to: '', all: false }; S.mvLimit = 300; render(); break;
       case 'mv-more': S.mvLimit = (S.mvLimit || 300) + 500; $('#mv-list').innerHTML = renderMovementList(); break;
       case 'import-history': pickHistoryFile(); break;
